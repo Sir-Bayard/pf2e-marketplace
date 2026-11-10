@@ -1,0 +1,43 @@
+{
+  "id": "pf2e-marketplace",
+  "title": "PF2e Marketplace",
+  "description": "<p>A marketplace window for Pathfinder 2e: markets with their shops, browsed and used without opening merchant sheets. Players buy and sell through a cart; the GM sets up markets, decides which ones players can see and where they can shop. Shops are the system's own merchant loot actors, so they keep working without the module.</p>",
+  "version": "0.1.0",
+  "url": "https://github.com/Sir-Bayard/pf2e-marketplace",
+  "manifest": "https://github.com/Sir-Bayard/pf2e-marketplace/releases/latest/download/module.json",
+  "download": "https://github.com/Sir-Bayard/pf2e-marketplace/releases/latest/download/module.zip",
+  "bugs": "https://github.com/Sir-Bayard/pf2e-marketplace/issues",
+  "readme": "https://github.com/Sir-Bayard/pf2e-marketplace#readme",
+  "changelog": "https://github.com/Sir-Bayard/pf2e-marketplace/blob/main/CHANGELOG.md",
+  "license": "https://github.com/Sir-Bayard/pf2e-marketplace/blob/main/LICENSE",
+  "authors": [
+    {
+      "name": "Sir Bayard",
+      "url": "https://github.com/Sir-Bayard"
+    }
+  ],
+  "compatibility": {
+    "minimum": "14",
+    "verified": "14.370",
+    "maximum": "14"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf2e",
+        "type": "system",
+        "compatibility": {
+          "minimum": "8.0.0"
+        }
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/marketplace.mjs"
+  ],
+  "styles": [
+    "styles/marketplace.css"
+  ],
+  "languages": [],
+  "socket": true
+}

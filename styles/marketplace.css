@@ -1,0 +1,105 @@
+/* PF2e Marketplace. Plain for now: the look gets its own pass once there are real shops to judge it with. */
+
+.pmk {
+  --pmk-gold: #c9a45c;
+  --pmk-line: rgba(201, 164, 92, 0.25);
+  --pmk-dim: rgba(230, 224, 210, 0.65);
+}
+.pmk .window-content { padding: 0; overflow: hidden; background: rgba(14, 12, 18, 0.97); color: #e6e0d2; container-type: inline-size; }
+.pmk .pmk-shell { display: grid; grid-template-columns: 210px minmax(0, 1fr); height: 100%; min-height: 0; }
+@container (max-width: 640px) {
+  .pmk .pmk-shell { grid-template-columns: 56px minmax(0, 1fr); }
+  .pmk .pmk-mkn, .pmk .pmk-marks, .pmk .pmk-railhead, .pmk .pmk-newmk span { display: none; }
+}
+
+/* Rail */
+.pmk .pmk-rail { display: flex; flex-direction: column; min-height: 0; padding: 10px 6px; gap: 4px; background: rgba(0, 0, 0, 0.25); border-right: 1px solid var(--pmk-line); }
+.pmk .pmk-railhead { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.7; padding: 0 6px 4px; }
+.pmk .pmk-mks { overflow-y: auto; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
+.pmk .pmk-mk { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; color: inherit; }
+.pmk .pmk-mk:hover { background: rgba(255, 255, 255, 0.05); text-shadow: none; }
+.pmk .pmk-mk.active { background: rgba(201, 164, 92, 0.16); box-shadow: inset 3px 0 0 var(--pmk-gold); }
+.pmk .pmk-mk img { width: 32px; height: 32px; object-fit: cover; border-radius: 4px; border: none; }
+.pmk .pmk-noimg { width: 32px; text-align: center; font-size: 18px; opacity: 0.6; }
+.pmk .pmk-mkn { font-weight: 600; overflow-wrap: anywhere; }
+.pmk .pmk-marks { display: flex; gap: 5px; font-size: 11px; }
+.pmk .pmk-off { opacity: 0.45; }
+.pmk .pmk-newmk { margin-top: 6px; height: 30px; font-size: 12px; }
+
+/* Main */
+.pmk .pmk-main { overflow-y: auto; min-height: 0; padding: 14px 18px 18px; }
+.pmk .pmk-empty { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; margin: 15% auto 0; max-width: 360px; opacity: 0.85; }
+.pmk .pmk-empty > i { font-size: 40px; color: var(--pmk-gold); }
+.pmk .pmk-empty button { width: auto; padding: 0 14px; }
+.pmk h2 { margin: 0; border: none; font-size: 22px; }
+.pmk .pmk-sub { font-size: 12px; color: var(--pmk-dim); }
+.pmk .pmk-h { margin: 16px 0 8px; border-bottom: 1px solid var(--pmk-line); padding-bottom: 4px; font-size: 14px; }
+.pmk .pmk-none { font-size: 12px; font-style: italic; color: var(--pmk-dim); margin: 4px 0; }
+.pmk .pmk-hint { font-size: 11px; color: var(--pmk-dim); margin: 10px 0 0; }
+
+/* Market page */
+.pmk .pmk-mhead { display: flex; flex-direction: column; gap: 8px; }
+.pmk .pmk-banner { width: 100%; max-height: 200px; object-fit: cover; border-radius: 6px; border: 1px solid var(--pmk-line); }
+.pmk .pmk-gmbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 10px 0 6px; }
+.pmk .pmk-gmbar button { width: auto; flex: 0 0 auto; height: 28px; padding: 0 10px; font-size: 12px; gap: 5px; }
+.pmk .pmk-gap { flex: 1; }
+.pmk .pmk-tog { opacity: 0.7; }
+.pmk .pmk-tog.on { opacity: 1; border-color: var(--pmk-gold); box-shadow: inset 0 0 0 1px var(--pmk-gold); }
+.pmk .pmk-status { font-size: 12px; margin: 6px 0; padding: 5px 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.05); color: var(--pmk-dim); }
+.pmk .pmk-status.pmk-good { background: rgba(90, 150, 90, 0.15); color: #cfe6c8; }
+.pmk .pmk-status i { margin-right: 4px; }
+.pmk .pmk-desc { margin: 8px 0; line-height: 1.45; }
+.pmk .pmk-desc img { max-width: 100%; }
+.pmk .pmk-shopgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.pmk .pmk-shop { position: relative; display: grid; grid-template-columns: 48px 1fr; grid-template-rows: auto auto; column-gap: 10px; align-items: center; padding: 8px; border-radius: 6px; border: 1px solid var(--pmk-line); background: rgba(255, 255, 255, 0.03); cursor: pointer; color: inherit; }
+.pmk .pmk-shop:hover { background: rgba(201, 164, 92, 0.1); text-shadow: none; }
+.pmk .pmk-shop img { grid-row: 1 / span 2; width: 48px; height: 48px; object-fit: cover; border-radius: 4px; border: none; }
+.pmk .pmk-shopn { font-weight: 600; overflow-wrap: anywhere; align-self: end; }
+.pmk .pmk-shops { font-size: 11px; color: var(--pmk-dim); align-self: start; }
+.pmk .pmk-shopm { position: absolute; top: 4px; right: 6px; display: flex; gap: 6px; font-size: 11px; }
+.pmk .pmk-x { color: inherit; opacity: 0.7; }
+.pmk .pmk-x:hover { opacity: 1; color: #e88; text-shadow: none; }
+.pmk .pmk-drop.pmk-dropping { outline: 2px dashed var(--pmk-gold); outline-offset: 4px; border-radius: 6px; }
+
+/* Shop page */
+.pmk .pmk-shead { display: flex; flex-direction: column; gap: 8px; }
+.pmk .pmk-back { color: var(--pmk-dim); font-size: 12px; cursor: pointer; align-self: flex-start; }
+.pmk .pmk-back:hover { color: var(--pmk-gold); text-shadow: none; }
+.pmk .pmk-stitle { display: flex; gap: 12px; align-items: center; }
+.pmk .pmk-stitle img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--pmk-line); }
+.pmk .pmk-search { display: flex; align-items: center; gap: 6px; margin: 10px 0 6px; padding: 0 8px; border-radius: 4px; background: rgba(255, 255, 255, 0.06); }
+.pmk .pmk-search input { border: none; background: transparent; height: 30px; flex: 1; color: inherit; box-shadow: none; outline: none; }
+.pmk .pmk-stock { display: flex; flex-direction: column; }
+.pmk .pmk-rowhead, .pmk .pmk-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) 44px 64px 110px; align-items: center; column-gap: 10px; }
+.pmk .pmk-rowhead { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pmk-dim); padding: 4px 6px; border-bottom: 1px solid var(--pmk-line); }
+.pmk .pmk-rowhead span:nth-child(n + 3), .pmk .pmk-lvl, .pmk .pmk-qty, .pmk .pmk-price { text-align: right; }
+.pmk .pmk-gh { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; padding: 10px 6px 4px; opacity: 0.75; }
+.pmk .pmk-count { letter-spacing: 0; padding: 0 5px; border-radius: 8px; background: rgba(255, 255, 255, 0.1); }
+.pmk .pmk-row { padding: 4px 6px; border-radius: 4px; cursor: pointer; }
+.pmk .pmk-row:hover { background: rgba(255, 255, 255, 0.05); }
+.pmk .pmk-row.open { background: rgba(201, 164, 92, 0.1); }
+.pmk .pmk-row img { width: 30px; height: 30px; border-radius: 3px; border: none; object-fit: cover; }
+.pmk .pmk-rn { overflow-wrap: anywhere; }
+.pmk .pmk-row.pmk-out .pmk-rn, .pmk .pmk-row.pmk-out .pmk-price { opacity: 0.5; }
+.pmk .pmk-rar { display: inline-block; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 5px; border-radius: 3px; margin-left: 4px; vertical-align: 1px; }
+.pmk .pmk-rar.pmk-uncommon { background: #98513d; color: #fff; }
+.pmk .pmk-rar.pmk-rare { background: #002664; color: #fff; }
+.pmk .pmk-rar.pmk-unique { background: #54166e; color: #fff; }
+.pmk .pmk-note { display: block; font-size: 11px; color: var(--pmk-dim); font-style: italic; }
+.pmk .pmk-qty { font-size: 12px; color: var(--pmk-dim); }
+.pmk .pmk-price { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pmk .pmk-per { font-size: 11px; color: var(--pmk-dim); }
+.pmk .pmk-rdesc { margin: 0 6px 8px 46px; padding: 8px 10px; border-left: 2px solid var(--pmk-line); font-size: 13px; line-height: 1.4; }
+.pmk .pmk-rdesc p:first-child { margin-top: 0; }
+
+/* Dialogs */
+.pmk-dialog .pmk-form { display: flex; flex-direction: column; gap: 8px; }
+.pmk-dialog .pmk-form > label, .pmk-dialog .pmk-field { display: flex; flex-direction: column; gap: 3px; }
+.pmk-dialog .pmk-pick { display: flex; gap: 4px; }
+.pmk-dialog .pmk-pick input { flex: 1; }
+.pmk-dialog .pmk-pick button { flex: 0 0 32px; }
+.pmk-dialog .pmk-hint { font-size: 11px; opacity: 0.75; margin: 0; }
+.pmk-dialog prose-mirror { min-height: 140px; }
+
+/* The button in the Actors tab */
+.pmk-open { flex: 1 1 100%; }
