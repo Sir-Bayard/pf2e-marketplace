@@ -6,6 +6,8 @@
 /** A PF2e merchant: a loot actor whose sheet type is "Merchant" (`system.lootSheetType`). */
 export const isMerchant = (actor) => actor?.type === "loot" && actor.system?.lootSheetType === "Merchant";
 
+const MOD_ID = "pf2e-marketplace";
+
 /** A loot actor's level (`system.details.level.value`). */
 export const actorLevel = (actor) => Number(actor?.system?.details?.level?.value ?? 0) || 0;
 
@@ -16,7 +18,7 @@ const isPhysical = (item) => (typeof item?.isOfType === "function" ? item.isOfTy
 /** Coins are treasure items with category "coin" (`isCoinage`); they're the shop's money, not its stock. */
 const isCoins = (item) => !!item?.isCoinage || (item?.type === "treasure" && item.system?.category === "coin");
 
-/** An item as a shop sells it: always the real, identified item (shops sell identified goods, Patrick 9 Nov), read
+/** An item as a shop sells it: always the real, identified item (shops sell identified goods, a design decision), read
  * from its source data so PF2e's mystified name and picture for an unidentified item don't show through. */
 export function realItem(item) {
   const src = item?._source ?? {};
@@ -123,6 +125,8 @@ export function boughtCopy(item, qty) {
   data.system.quantity = qty;
   data.system.containerId = null;
   if (data.system.identification) data.system.identification.status = "identified";
+  // The module's own marks (a sold item's rotation count) stay with the shop.
+  if (data.flags?.[MOD_ID]) delete data.flags[MOD_ID];
   const worn = item.system?.usage?.type === "worn" && item.system?.usage?.where;
   data.system.equipped = worn ? { carryType: "worn", inSlot: false } : { carryType: "worn" };
   return data;
@@ -137,6 +141,8 @@ export async function giveItems(actor, datas) {
 
 /** Take a quantity out of a shop's stock: the item goes when none are left, as PF2e's own sale does. */
 export async function takeFromStock(item, qty) {
+  // Never more than there is now: a stack that shrank since the check is an error, not a deletion.
+  if (quantityOf(item) < qty) throw new Error(`only ${quantityOf(item)} of ${item.name} left`);
   const left = quantityOf(item) - qty;
   if (left < 1) await item.delete();
   else await item.update({ "system.quantity": left });
@@ -161,7 +167,8 @@ export const isTreasure = (item) => item?.type === "treasure" && !isCoins(item);
 
 /**
  * What a character can offer a shop, as plain rows: every physical item but coins. `why` says why one can't be sold
- * (unidentified items must be identified first, Patrick 9 Nov; a container must be emptied first).
+ * (unidentified items must be identified first, a design decision; a container must be emptied first; a temporary
+ * item, or one a feature or effect granted, isn't the character's to sell).
  */
 export function sellRows(actor) {
   const out = [];
@@ -170,6 +177,7 @@ export function sellRows(actor) {
     const { cp, per } = priceOf(item);
     let why = null;
     if (item.isIdentified === false) why = "Identify it first.";
+    else if (granted(item)) why = "Not yours to sell (temporary, or granted by a feature).";
     else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
     else if (!cp) why = "Worth nothing to a shop.";
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
@@ -179,8 +187,12 @@ export function sellRows(actor) {
 }
 
 /** Can this item be sold to a shop now? */
-export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false
+export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item)
   && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0) && priceOf(item).cp > 0;
+/** A temporary item (`system.temporary`), or one granted by a feat, feature or effect (`flags.pf2e.grantedBy`). */
+function granted(item) {
+  return !!item?.system?.temporary || !!item?.flags?.pf2e?.grantedBy;
+}
 
 /** The data for an item a shop bought: the quantity sold, out of any container, unequipped, marked as sold to the shop
  * (flag `stock.kind`, for 0.2's rotation). */
@@ -191,7 +203,9 @@ export function soldCopy(item, qty, mod) {
   data.system.quantity = qty;
   data.system.containerId = null;
   data.system.equipped = { carryType: "worn" };
+  delete data.system.temporary;
   data.flags ??= {};
+  if (data.flags.pf2e?.grantedBy) delete data.flags.pf2e.grantedBy;
   data.flags[mod] = { ...(data.flags[mod] ?? {}), stock: { kind: "sold", left: 2 } };
   return data;
 }
@@ -199,10 +213,14 @@ export function soldCopy(item, qty, mod) {
 /** Set a loot actor's level (`system.details.level.value`). */
 export const setLevel = (actor, level) => actor.update({ "system.details.level.value": Math.round(Number(level) || 0) });
 
-/** A shopkeeper as players know them: the name and picture on their token. */
+/** Art that came with a stat block (the system's, core's or a token pack's): its path can name the real creature. */
+const SHIPPED_ART = /^(?:systems\/pf2e\/|modules\/(?:pf2e-tokens-|pathfinder-tokens|pf2e-bestiary-|pf2e-monster-core|pf2e-npc-core)|icons\/)/i;
+/** A shopkeeper as players know them: the name they go by (PF2e NPC Attitudes' "known as", else the token's name) and
+ * the picture players get there (its portrait, else the actor's art unless it came with a stat block, else the token). */
 export function keeperFace(actor, isGM) {
   if (!actor) return null;
-  const known = actor.flags?.["pf2e-npc-attitudes"]?.npc?.knownAs;
-  const name = isGM ? actor.name : (known || actor.prototypeToken?.name?.trim() || actor.name);
-  return { name, img: actor.prototypeToken?.texture?.src || actor.img };
+  const rec = actor.flags?.["pf2e-npc-attitudes"]?.npc ?? {};
+  const name = isGM ? actor.name : (rec.knownAs || actor.prototypeToken?.name?.trim() || actor.name);
+  const art = actor.img && !SHIPPED_ART.test(actor.img) ? actor.img : null;
+  return { name, img: rec.portrait || art || actor.prototypeToken?.texture?.src || actor.img };
 }

@@ -102,7 +102,7 @@ export const CATEGORIES = [
   ["armor", "Armor and shields", ["armor", "shield"]],
   ["consumables", "Consumables", ["consumable"]],
   ["runes", "Runes", []],
-  ["gear", "Gear", ["equipment", "backpack", "kit", "book"]],
+  ["gear", "Gear", ["equipment", "backpack", "book"]],
   ["treasure", "Treasure", ["treasure"]],
 ];
 const CATEGORY_OF = new Map(CATEGORIES.flatMap(([key, , types]) => types.map((t) => [t, key])));
@@ -220,6 +220,10 @@ export function attitudePct(attitude, pcts, hostileRefuses = true) {
 
 /** A price changed by a percentage, rounded up to the copper (never below nothing). */
 export const adjust = (cp, pct) => Math.max(0, Math.ceil((Math.max(0, Number(cp) || 0) * (100 + (Number(pct) || 0))) / 100));
+
+/** The rate a shop pays a seller, in percent: its item or treasure rate, but never more than the share of the price
+ * it would charge that seller (100 plus their attitude change), so buying and selling back can't make money. */
+export const sellRate = (conf, treasure, pct) => Math.max(0, Math.min(treasure ? conf.treasureRate : conf.itemRate, 100 + (Number(pct) || 0)));
 
 /** What a shop pays for `qty` of an item worth `cp` copper per batch of `per`, at `ratePct` percent: rounded down to
  * the copper, since the shop is the one paying. */

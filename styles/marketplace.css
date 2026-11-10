@@ -91,6 +91,8 @@
 .pmk .pmk-per { font-size: 11px; color: var(--pmk-dim); }
 .pmk .pmk-rdesc { margin: 0 6px 8px 46px; padding: 8px 10px; border-left: 2px solid var(--pmk-line); font-size: 13px; line-height: 1.4; }
 .pmk .pmk-rdesc p:first-child { margin-top: 0; }
+.pmk .pmk-rdesc img { max-width: 100%; height: auto; }
+.pmk .pmk-shop:has(.pmk-shopm) .pmk-shopn { padding-right: 34px; }
 
 /* Adding to the cart */
 .pmk .pmk-add { display: flex; justify-content: center; }
