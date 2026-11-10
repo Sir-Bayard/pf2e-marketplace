@@ -6,6 +6,8 @@
 /** A PF2e merchant: a loot actor whose sheet type is "Merchant" (`system.lootSheetType`). */
 export const isMerchant = (actor) => actor?.type === "loot" && actor.system?.lootSheetType === "Merchant";
 
+import { formulaKey } from "./helpers.mjs";
+
 const MOD_ID = "pf2e-marketplace";
 
 /** A loot actor's level (`system.details.level.value`). */
@@ -189,6 +191,7 @@ export function sellRows(actor) {
     if (item.isIdentified === false) why = "Identify it first.";
     else if (granted(item)) why = "Not yours to sell (temporary, or granted by a feature).";
     else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
+    else if (isParchment(item)) why = "A formula's copy; shops don't buy it.";
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
     out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), why });
   }
@@ -212,7 +215,7 @@ export function tradeRows(actor) {
 
 /** Can this item be sold to a shop now? Something worth nothing sells for nothing (a design decision: a way to get rid
  * of things while shopping). */
-export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item)
+export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item) && !isParchment(item)
   && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0);
 /** A temporary item (`system.temporary`), or one granted by a feat, feature or effect (`flags.pf2e.grantedBy`). */
 function granted(item) {
@@ -345,3 +348,57 @@ export async function spellItemData(kind, templateUuid, spellUuid, rank) {
   data.system.description.value = `<p>@UUID[${spell.uuid}]{${spell.name}}</p>${data.system.description?.value ?? ""}`;
   return data;
 }
+
+/* ------------------------------------------------------------------ */
+/* Formulas (0.4)                                                     */
+/* ------------------------------------------------------------------ */
+
+/** The formula an item stands for, in one form (`formulaKey`): its compendium entry (`_stats.compendiumSource`, or the
+ * older `flags.core.sourceId`), else the Items-tab item it was dropped from (the module's `source` flag, or Foundry's
+ * `_stats.duplicateSource` when that's a world item). Null when there's nothing lasting to learn from: a link to the
+ * shop's own item would break when the item leaves the shop. */
+export function formulaUuid(item) {
+  const dup = item?._stats?.duplicateSource;
+  return formulaKey(item?._stats?.compendiumSource ?? item?.flags?.core?.sourceId ?? item?.flags?.[MOD_ID]?.source
+    ?? (typeof dup === "string" && /^Item\.[^.]+$/.test(dup) ? dup : null));
+}
+
+/** The formulas a character knows (`system.crafting.formulas`: their own and any a rule element grants), as keys. */
+const knownFormulas = (actor) => [...(actor?._source?.system?.crafting?.formulas ?? []), ...(actor?.system?.crafting?.formulas ?? [])]
+  .map((f) => formulaKey(f?.uuid)).filter(Boolean);
+/** Does a character know a formula? */
+export const knowsFormula = (actor, uuid) => !!uuid && knownFormulas(actor).includes(formulaKey(uuid));
+
+/** Add formulas to a character's Crafting tab. Returns what was there before, for undoing. */
+export async function addFormulas(actor, uuids) {
+  const before = foundry.utils.deepClone(actor._source?.system?.crafting?.formulas ?? []);
+  const known = new Set(knownFormulas(actor));
+  const add = [...new Set(uuids.map(formulaKey).filter((u) => u && !known.has(u)))].map((uuid) => ({ uuid }));
+  if (add.length) await actor.update({ "system.crafting.formulas": [...before, ...add] });
+  return before;
+}
+/** Put a character's formulas back as they were. */
+export const restoreFormulas = (actor, before) => actor.update({ "system.crafting.formulas": before });
+
+/** The parchment a bought formula comes on: an item with no Bulk and no price (it's the record; the knowledge is on the
+ * Crafting tab), naming the item and linking it. */
+export function parchmentData(name, uuid) {
+  // The label goes inside @UUID[...]{...} and HTML: no braces, brackets or markup.
+  const label = String(name).replace(/[{}[\]<>&"]/g, "");
+  return {
+    name: `Formula: ${name}`,
+    type: "equipment",
+    img: "icons/sundries/scrolls/scroll-rolled-white.webp",
+    system: {
+      quantity: 1,
+      bulk: { value: 0 },
+      price: { value: { gp: 0 } },
+      description: { value: `<p>A formula for @UUID[${uuid}]{${label}}, also in the Crafting tab.</p>` },
+      equipped: { carryType: "worn" },
+    },
+    // Marked so it's never sold to a shop as if it were the formula.
+    flags: { [MOD_ID]: { parchment: true } },
+  };
+}
+/** A parchment from a bought formula. */
+export const isParchment = (item) => !!item?.flags?.[MOD_ID]?.parchment;

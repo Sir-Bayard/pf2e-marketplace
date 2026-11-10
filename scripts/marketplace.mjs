@@ -7,11 +7,11 @@
 
 import {
   esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTradeShop, MAX_LINES, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, takeFromCart, listOf,
-  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, cleanStock, nextStockKind, STOCK_FILTERS, filterLabel, cleanStockLines, drawable, drawEntries, drawnQty, scribable, drawSpells, MAX_STOCK_LINES, restockPlan, restockDue, sourceKey, AMOUNTS, AMOUNT_LABEL, AMOUNT_DEFAULTS, LINE_RARITIES, rarityAllowed, parseRange, lineCount, cleanOffer, cleanOffers, canAccept, offerNet, coinsCp, MAX_OFFERS_EACH, MAX_OFFERS, addLogEntry, cleanLogEntry, handPricedNote,
+  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, cleanStock, nextStockKind, STOCK_FILTERS, filterLabel, cleanStockLines, drawable, drawEntries, drawnQty, scribable, drawSpells, MAX_STOCK_LINES, restockPlan, restockDue, sourceKey, AMOUNTS, AMOUNT_LABEL, AMOUNT_DEFAULTS, LINE_RARITIES, rarityAllowed, parseRange, lineCount, cleanOffer, cleanOffers, canAccept, offerNet, coinsCp, MAX_OFFERS_EACH, MAX_OFFERS, formulaPrice, FORMULA_MULT_DEFAULTS, buyPrice, addLogEntry, cleanLogEntry, handPricedNote,
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
-  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, tradeRows, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
+  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, tradeRows, formulaUuid, knowsFormula, addFormulas, restoreFormulas, parchmentData, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
 } from "./pf2e.mjs";
 
 const MOD = "pf2e-marketplace";
@@ -204,6 +204,25 @@ const shopsFor = (market) => shopsOf(market, actorRows(), parentOf, game.user.is
 function tradeMarketFor(shopId, user, rows = actorRows()) {
   return store().markets.find((m) => shopsOf(m, rows, parentOf, user.isGM).some((s) => s.id === shopId && canTradeShop(m, s, user.isGM))) ?? null;
 }
+/** Formulas (0.4): a shop item marked as a formula sells a copy of the formula at the formula price for its level and
+ * rarity (or the GM's own price); the shop keeps it. */
+const formulaMults = () => ({ uncommon: Number(game.settings.get(MOD, "formula-uncommon")), rare: Number(game.settings.get(MOD, "formula-rare")) });
+const isFormulaItem = (item) => !!cleanStock(item?.flags?.[MOD]?.stock).formula;
+const itemLevel = (item) => Number(item?.level ?? item?.system?.level?.value ?? 0) || 0;
+const itemRarity = (item) => item?.rarity ?? item?.system?.traits?.rarity ?? "common";
+/** What a shop item sells for: { cp, per }. */
+function itemPrice(item) {
+  const st = cleanStock(item?.flags?.[MOD]?.stock);
+  if (!st.formula) return priceOf(item);
+  return { cp: st.price ?? formulaPrice(itemLevel(item), itemRarity(item), formulaMults()), per: 1 };
+}
+/** A shop's stock rows as players see them: formulas priced as formulas, one copy at a time. */
+const shopRows = (actor) => stockRows(actor).map((r) => {
+  const st = cleanStock(r.stock, r.qty);
+  if (!st.formula) return r;
+  return { ...r, name: `Formula: ${r.name}`, formula: true, cp: st.price ?? formulaPrice(r.level, r.rarity, formulaMults()), per: 1, qty: 1, uuid: formulaUuid(actor.items.get(r.id)) };
+});
+
 /** A shop's own switches, as a row for canTradeShop. */
 const shopRow = (actor) => ({ id: actor?.id, hidden: !!actor?.flags?.[MOD]?.hidden, closed: !!actor?.flags?.[MOD]?.closed });
 
@@ -311,21 +330,33 @@ function buyerChoices(cart) {
 
 /** What each cart line is now: its shop, item, price for this buyer and anything wrong with it. */
 function cartState(lines, buyer, rows = actorRows()) {
+  const formulas = new Set();
   return lines.map((l) => {
     const shop = game.actors.get(l.shop);
     const item = isMerchant(shop) ? shop.items.get(l.item) : null;
-    const stock = item ? quantityOf(item) : 0;
-    const { cp, per } = item ? priceOf(item) : { cp: 0, per: 1 };
+    let stock = item ? quantityOf(item) : 0;
+    let { cp, per } = item ? priceOf(item) : { cp: 0, per: 1 };
     const market = shop ? tradeMarketFor(shop.id, game.user, rows) : null;
-    const raw = shop ? pricePct(shop, buyer) : 0;
-    const pct = raw === null ? null : pctFor(raw, isTreasure(item));
+    const pct = shop ? pricePct(shop, buyer) : 0;
+    const formula = isFormulaItem(item);
+    const uuid = formula ? formulaUuid(item) : null;
+    if (formula) {
+      ({ cp, per } = itemPrice(item));
+      stock = 1;
+    }
     let problem = null;
     if (!shop || !isMerchant(shop)) problem = "This shop is gone.";
     else if (!item || !sellable(item)) problem = "No longer for sale.";
+    else if (formula && !uuid) problem = "No longer for sale.";
+    else if (formula && buyer?.type !== "character") problem = "Only characters learn formulas.";
+    else if (formula && knowsFormula(buyer, uuid)) problem = `${buyer.name} already knows it.`;
+    else if (formula && formulas.has(uuid)) problem = "Already in the cart from another shop.";
     else if (!market) problem = "This shop isn't open for trade right now.";
     else if (pct === null) problem = `${shopFace(shop)} won't trade with ${buyer?.name ?? "you"}.`;
+    else if (formula && l.qty > 1) problem = "One copy only.";
     else if (stock < l.qty) problem = stock ? `Only ${stock} left.` : "Sold out.";
-    return { ...l, shopDoc: shop, itemDoc: item, stock, cp, per, pct: pct ?? 0, price: adjust(priceFor(cp, per, l.qty), pct ?? 0), market, problem };
+    if (uuid) formulas.add(uuid);
+    return { ...l, shopDoc: shop, itemDoc: item, formula, stock, cp, per, pct: pct ?? 0, price: buyPrice(cp, per, l.qty, pct ?? 0, isTreasure(item), formula), market, problem };
   });
 }
 
@@ -516,11 +547,24 @@ async function processTrade(msg, sender) {
     if (!tradeMarketFor(shop.id, sender)) throw new Refused(`${shop.name} isn't open for trade.`);
     const item = shop.items.get(l.item);
     if (!item || !sellable(item)) throw new Refused(`something in the cart from ${shop.name} isn't for sale any more.`);
-    if (l.qty > quantityOf(item)) throw new Refused(`${shop.name} has only ${quantityOf(item)} of ${realItem(item).name}.`);
     const pct = pricePct(shop, trader);
     if (pct === null) throw new Refused(`${shopFace(shop, sender)} won't trade with ${trader.name}.`);
+    if (isFormulaItem(item)) {
+      // A formula is a copy: the shop keeps the item, the trader learns it and gets a parchment.
+      const uuid = formulaUuid(item);
+      const name = `Formula: ${realItem(item).name}`;
+      if (!uuid) throw new Refused(`something in the cart from ${shop.name} isn't for sale any more.`);
+      if (trader.type !== "character") throw new Refused("only characters learn formulas.");
+      if (l.qty !== 1) throw new Refused(`one copy of ${name} is enough.`);
+      if (knowsFormula(trader, uuid)) throw new Refused(`${trader.name} already knows ${realItem(item).name}.`);
+      if (buys.some((b) => b.uuid === uuid)) throw new Refused(`${name} is in the cart twice.`);
+      const { cp, per } = itemPrice(item);
+      buys.push({ shop: shop.id, shopDoc: shop, item, qty: 1, price: buyPrice(cp, per, 1, pct, false, true), name, uuid, formula: true });
+      continue;
+    }
+    if (l.qty > quantityOf(item)) throw new Refused(`${shop.name} has only ${quantityOf(item)} of ${realItem(item).name}.`);
     const { cp, per } = priceOf(item);
-    buys.push({ shop: shop.id, shopDoc: shop, item, qty: l.qty, price: adjust(priceFor(cp, per, l.qty), pctFor(pct, isTreasure(item))), name: realItem(item).name });
+    buys.push({ shop: shop.id, shopDoc: shop, item, qty: l.qty, price: buyPrice(cp, per, l.qty, pct, isTreasure(item)), name: realItem(item).name });
   }
   const sold = [];
   for (const l of sales) {
@@ -556,10 +600,11 @@ async function processTrade(msg, sender) {
   // against what's there now), the shops that owe pay, the trader pays, the trader gets what they bought, the shops get
   // what they bought. A step that fails undoes the ones before it, deliveries included. After that the trade stands;
   // the money still to go in is paid, and a payment that fails is noted for the GM rather than undoing the trade.
-  const boughtCopies = buys.map((b) => boughtCopy(b.item, b.qty));
+  const boughtCopies = buys.map((b) => (b.formula ? parchmentData(realItem(b.item).name, b.uuid) : boughtCopy(b.item, b.qty)));
+  const learned = buys.filter((b) => b.formula).map((b) => b.uuid);
   const soldCopies = sold.map((x) => ({ shop: x.shopDoc, data: soldCopy(x.item, x.qty, MOD, x.conf.keepSold) }));
   const changed = "the stock or your inventory changed. Check the cart and try again.";
-  const taken = await takeAll(buys, changed);
+  const taken = await takeAll(buys.filter((b) => !b.formula), changed);
   try {
     taken.push(...(await takeAll(sold, changed)));
   } catch (err) {
@@ -568,7 +613,9 @@ async function processTrade(msg, sender) {
   }
   const paid = [];
   const delivered = [];
+  let knew = null;
   const undo = async () => {
+    if (knew) await restoreFormulas(trader, knew).catch((e) => console.error(`${MOD} | couldn't take back the formulas given to ${trader.name}`, e));
     for (const d of delivered.reverse()) await undeliver(d);
     for (const [actor, n] of paid.reverse()) await receive(actor, n).catch((e) => console.error(`${MOD} | couldn't give ${actor.name} back ${n} cp`, e));
     await putBack(taken);
@@ -591,6 +638,11 @@ async function processTrade(msg, sender) {
   try {
     delivered.push(await deliver(trader, boughtCopies));
     for (const c of soldCopies) delivered.push(await deliver(c.shop, [c.data], giveSold));
+    if (learned.length) {
+      const before = foundry.utils.deepClone(trader._source?.system?.crafting?.formulas ?? []);
+      knew = before;
+      await addFormulas(trader, learned);
+    }
   } catch (err) {
     await undo();
     throw err;
@@ -1109,6 +1161,7 @@ class MarketApp extends Base {
       pmkTab: MarketApp.#onTab,
       pmkSellAdd: MarketApp.#onSellAdd,
       pmkKind: MarketApp.#onKind,
+      pmkFormula: MarketApp.#onFormula,
       pmkPost: MarketApp.#onPost,
       pmkNewOffer: MarketApp.#onNewOffer,
       pmkOfferCancel: MarketApp.#onOfferCancel,
@@ -1300,7 +1353,7 @@ class MarketApp extends Base {
     const trade = !!tradeMarketFor(actor.id, game.user);
     // Browse only: players see the staples, and the rest only if they saw the shop open since its last restock.
     const staplesOnly = !trade && !this.isGM && !remembered(actor);
-    const rows = stockRows(actor).filter((r) => !staplesOnly || cleanStock(r.stock, r.qty).kind === "staple");
+    const rows = shopRows(actor).filter((r) => !staplesOnly || cleanStock(r.stock, r.qty).kind === "staple");
     const conf = shopConf(actor);
     const cart = loadCart();
     const { list: buyers, chosen } = buyerChoices(cart);
@@ -1324,12 +1377,12 @@ class MarketApp extends Base {
       : `${ATTITUDE_LABEL[info.real] ?? "No attitude"}, shown as ${ATTITUDE_LABEL[info.shown] ?? "Unknown"}: normal prices`;
     const keeperHTML = face ? `<div class="pmk-keeper"><img src="${esc(face.img)}" alt=""><div><strong>${esc(face.name)}</strong>
         ${this.isGM ? `<span class="pmk-dim">${esc(gmAtt)}</span>` : ""}</div></div>`
-      : this.isGM ? `<p class="pmk-hint">Drop an NPC here for a shopkeeper.</p>` : "";
+      : this.isGM ? `<p class="pmk-hint">Drop an NPC here for a shopkeeper, or items to stock.</p>` : "";
     const tradingAs = buyers.length ? `<label class="pmk-buyer">Trading as <select name="pmk-buyer">${buyers.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}: ${esc(formatCp(fundsCp(a), "no money"))}</option>`).join("")}</select></label>` : "";
     const priceLine = !chosen ? "" : pct === null ? `<p class="pmk-status pmk-warnbox">${esc(shopFace(actor))} won't trade with ${esc(chosen.name)}.</p>`
       : pct ? `<p class="pmk-status ${pct < 0 ? "pmk-good" : ""}">Prices for ${esc(chosen.name)}: ${pct < 0 ? `${-pct}% off` : `${pct}% more`}${attitudeInfo(actor, chosen).masked ? "" : ` (${esc(ATTITUDE_LABEL[attitudeFor(actor, chosen)])})`}.</p>` : "";
     const tabs = trade && conf.buys && pct !== null ? `<nav class="pmk-tabs"><a class="${tab === "buy" ? "active" : ""}" data-action="pmkTab" data-tab="buy"><i class="fa-solid fa-cart-shopping"></i> Buy</a><a class="${tab === "sell" ? "active" : ""}" data-action="pmkTab" data-tab="sell"><i class="fa-solid fa-hand-holding-dollar"></i> Sell</a></nav>` : "";
-    const body = tab === "sell" ? this.#sellHTML(actor, chosen, conf, cart) : await this.#stockHTML(actor, rows, trade && pct !== null, pct ?? 0, cart);
+    const body = tab === "sell" ? this.#sellHTML(actor, chosen, conf, cart) : await this.#stockHTML(actor, rows, trade && pct !== null, pct ?? 0, cart, chosen);
     return `<div class="pmk-shopview pmk-keeperdrop">
       ${chosen ? this.#tallyHTML(cart, chosen) : ""}
       <header class="pmk-shead">
@@ -1349,7 +1402,7 @@ class MarketApp extends Base {
   }
 
   /** The Buy tab: the shop's stock, priced for the chosen buyer. */
-  async #stockHTML(actor, rows, trade, pct, cart) {
+  async #stockHTML(actor, rows, trade, pct, cart, buyer) {
     const inCart = new Map(cart.lines.filter((l) => l.shop === actor.id).map((l) => [l.item, l.qty]));
     const groups = groupStock(rows, this.view.query);
     const list = [];
@@ -1358,19 +1411,21 @@ class MarketApp extends Base {
       for (const r of items) {
         const open = this.view.open.has(r.id);
         const rar = RARITY[r.rarity] ? `<span class="pmk-rar pmk-${esc(r.rarity)}">${RARITY[r.rarity]}</span>` : "";
+        // A formula: not for a character who knows it, nor for the party stash.
+        const knows = r.formula && buyer && (buyer.type !== "character" || knowsFormula(buyer, r.uuid));
         const note = r.holds ? `<span class="pmk-note">holds ${r.holds} ${r.holds === 1 ? "item" : "items"}; not for sale as it is</span>`
-          : "";
-        const kind = this.isGM ? this.#kindHTML(r) : "";
-        const shown = adjust(r.cp, pctFor(pct, r.type === "treasure"));
+          : knows ? `<span class="pmk-note">${buyer.type === "character" ? `${esc(buyer.name)} knows it` : "characters only"}</span>` : "";
+        const kind = this.isGM ? this.#kindHTML(r) + this.#formulaHTML(r) : "";
+        const shown = buyPrice(r.cp, r.per, r.per, pct, r.type === "treasure", r.formula);
         const was = pct && shown !== r.cp ? ` <s class="pmk-per">${esc(formatCp(r.cp))}</s>` : "";
         const price = `${esc(formatCp(shown))}${was}${r.per > 1 ? ` <span class="pmk-per">for ${r.per}</span>` : ""}`;
         list.push(`<div class="pmk-row ${open ? "open" : ""} ${r.qty ? "" : "pmk-out"}" data-action="pmkItem" data-id="${esc(r.id)}">
           <img src="${esc(r.img)}" alt="">
           <span class="pmk-rn">${esc(r.name)} ${rar}${kind}${note}</span>
           <span class="pmk-lvl">${r.level}</span>
-          <span class="pmk-qty">${r.qty ? `×${r.qty}` : "sold out"}</span>
+          <span class="pmk-qty">${r.formula ? "copy" : r.qty ? `×${r.qty}` : "sold out"}</span>
           <span class="pmk-price">${price}</span>
-          ${this.#addHTML(r, trade, inCart.get(r.id) ?? 0)}
+          ${this.#addHTML(r, trade && !knows && (!r.formula || !!r.uuid), inCart.get(r.id) ?? 0)}
         </div>`);
         if (open) list.push(`<div class="pmk-rdesc">${await this.#description(actor, r.id) || `<p class="pmk-none">No description.</p>`}</div>`);
       }
@@ -1393,6 +1448,12 @@ class MarketApp extends Base {
       : st.kind === "rotating" ? "Cleared on a restock. Click: staple."
       : `Sold by a player; gone after ${st.left} more ${st.left === 1 ? "restock" : "restocks"}. Click: staple.`;
     return `<a class="pmk-kind pmk-kind-${st.kind}" data-action="pmkKind" data-id="${esc(r.id)}" data-tooltip="${esc(tip)}">${esc(label)}</a>`;
+  }
+
+  /** The GM's formula mark: a click sells the item as a formula (or not); a right-click on a formula sets its price. */
+  #formulaHTML(r) {
+    const tip = r.formula ? `Sold as a formula at ${formatCp(r.cp)}. Click: sell the item. Right-click: set the price.` : "Click: sell as a formula.";
+    return `<a class="pmk-fmark ${r.formula ? "on" : ""}" data-action="pmkFormula" data-id="${esc(r.id)}" data-tooltip="${esc(tip)}"><i class="fa-solid fa-scroll"></i></a>`;
   }
 
   /** The Sell tab: what the chosen character carries, with the shop's offer for each. Choices go into the cart. */
@@ -1593,7 +1654,7 @@ class MarketApp extends Base {
       const real = l.itemDoc ? realItem(l.itemDoc) : { name: "Gone", img: "" };
       return `<div class="pmk-crow ${l.problem ? "pmk-bad" : ""}">
         <img src="${esc(real.img)}" alt="">
-        <span class="pmk-rn">${esc(real.name)}${l.problem ? `<span class="pmk-note pmk-warn">${esc(l.problem)}</span>` : ""}</span>
+        <span class="pmk-rn">${l.formula ? "Formula: " : ""}${esc(real.name)}${l.problem ? `<span class="pmk-note pmk-warn">${esc(l.problem)}</span>` : ""}</span>
         ${this.#stepperHTML("buy", l, l.stock)}
         <span class="pmk-price">${esc(formatCp(l.price))}</span>
         ${remove("buy", l)}
@@ -1738,7 +1799,7 @@ class MarketApp extends Base {
     // the trader's own item on the Sell tab.
     for (const row of this.element.querySelectorAll(".pmk-row[data-id], .pmk-srow[data-id]")) {
       row.addEventListener("contextmenu", (ev) => {
-        if (ev.target.closest(".pmk-addbtn, .pmk-kind, input")) return;
+        if (ev.target.closest(".pmk-addbtn, .pmk-kind, .pmk-fmark, input")) return;
         ev.preventDefault();
         if (row.classList.contains("pmk-row")) showShopItem(game.actors.get(this.view.shop), row.dataset.id, this.isGM);
         else buyerChoices(loadCart()).chosen?.items.get(row.dataset.id)?.sheet.render(true);
@@ -1752,6 +1813,14 @@ class MarketApp extends Base {
         this.#setStapleQty(chip.dataset.id);
       });
     }
+    // GM: a right-click on a formula's mark sets its price.
+    for (const chip of this.element.querySelectorAll(".pmk-fmark.on")) {
+      chip.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.#setFormulaPrice(chip.dataset.id);
+      });
+    }
     // A right-click on an add or offer button takes one off.
     for (const btn of this.element.querySelectorAll(".pmk-addbtn")) {
       btn.addEventListener("contextmenu", (ev) => {
@@ -1761,7 +1830,7 @@ class MarketApp extends Base {
         else this.#addToCart(btn.dataset.id, -1);
       });
     }
-    // GM: drag an NPC onto a shop to make them its shopkeeper.
+    // GM: drag an NPC onto a shop to make them its shopkeeper, or an item to stock it.
     const kd = this.element.querySelector(".pmk-keeperdrop");
     if (kd && this.isGM) {
       kd.addEventListener("dragover", (ev) => ev.preventDefault());
@@ -1792,9 +1861,11 @@ class MarketApp extends Base {
     }
   }
 
+  /** GM: drop an NPC on a shop for its shopkeeper, or an item (from a compendium, the Items tab or a sheet) to stock it. */
   async #onDropKeeper(event) {
     event.preventDefault();
     const data = TextEditor().getDragEventData(event);
+    if (data?.type === "Item" && data.uuid) return this.#onDropItem(data.uuid);
     if (data?.type !== "Actor" || !data.uuid) return;
     const npc = await fromUuid(data.uuid);
     const shop = game.actors.get(this.view.shop);
@@ -1802,6 +1873,33 @@ class MarketApp extends Base {
     if (npc.pack) return void ui.notifications.warn("Marketplace: drag an NPC from the Actors tab (import a compendium actor first).");
     if (npc.type !== "npc") return void ui.notifications.warn("Marketplace: a shopkeeper is an NPC actor.");
     await shop.update({ [`flags.${MOD}.shop.keeper`]: npc.id });
+  }
+
+  /** GM: stock a dropped item. The same item already a staple here (not a formula) gets more of it, and its staple
+   * number goes up by as many; anything else comes in as a staple of what was dropped. */
+  async #onDropItem(uuid) {
+    const shop = game.actors.get(this.view.shop);
+    const item = await fromUuid(uuid);
+    if (!shop || !item || item.parent === shop) return;
+    if (!sellable(item)) return void ui.notifications.warn("Marketplace: a shop stocks physical items (not coins, nor a container with things in it).");
+    const data = game.items.fromCompendium(item, { keepId: false, clearFolder: true });
+    delete data.system?.containerId;
+    if (data.system?.equipped) data.system.equipped = { carryType: "worn" };
+    // Whatever it was in another shop (rotating, sold, a formula), here it comes in as a staple. A world item remembers
+    // where it came from, so it can be sold as a formula.
+    if (data.flags) delete data.flags[MOD];
+    if (!item.pack && !item.parent && !data._stats?.compendiumSource) foundry.utils.setProperty(data, `flags.${MOD}.source`, item.uuid);
+    const src = sourceKey(data._stats?.compendiumSource ?? data.flags?.core?.sourceId ?? (item.pack ? item.uuid : null));
+    const same = src && shop.items.find((i) => {
+      const st = cleanStock(i.flags?.[MOD]?.stock, quantityOf(i));
+      return st.kind === "staple" && !st.formula && i.name === data.name && i.type === data.type && !i.system?.containerId
+        && sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId) === src;
+    });
+    const qty = Math.max(1, Number(data.system?.quantity) || 1);
+    if (same) {
+      const st = cleanStock(same.flags?.[MOD]?.stock, quantityOf(same));
+      await same.update({ "system.quantity": quantityOf(same) + qty, [`flags.${MOD}.stock.qty`]: st.qty + qty }, { pmkInternal: true });
+    } else await shop.createEmbeddedDocuments("Item", [data]);
   }
 
   async #onDropActor(event) {
@@ -1882,11 +1980,12 @@ class MarketApp extends Base {
     if (!item || !sellable(item)) return;
     if (dir > 0 && !tradeMarketFor(actor.id, game.user)) return void ui.notifications.warn("Marketplace: this shop isn't open for trade right now.");
     const cart = loadCart();
-    const { per } = priceOf(item);
+    const { per } = itemPrice(item);
+    const most = isFormulaItem(item) ? 1 : quantityOf(item);
     if (dir > 0) {
       const had = cart.lines.find((l) => l.shop === actor.id && l.item === item.id);
-      cart.lines = addToCart(cart.lines, actor.id, item.id, per, quantityOf(item));
-      if (!had && !cart.lines.some((l) => l.shop === actor.id && l.item === item.id) && quantityOf(item)) ui.notifications.warn(`Marketplace: the cart is full (${MAX_LINES} lines). Trade or take something out first.`);
+      cart.lines = addToCart(cart.lines, actor.id, item.id, per, most);
+      if (!had && !cart.lines.some((l) => l.shop === actor.id && l.item === item.id) && most) ui.notifications.warn(`Marketplace: the cart is full (${MAX_LINES} lines). Trade or take something out first.`);
     } else cart.lines = takeFromCart(cart.lines, actor.id, item.id, per);
     saveCart(cart);
     this.render();
@@ -1903,6 +2002,48 @@ class MarketApp extends Base {
     // A staple made rotating and back keeps its number; otherwise it's what the item has now (at least 1).
     const qty = Number.isFinite(Number(raw.qty)) && raw.qty !== null ? Math.max(0, Math.round(Number(raw.qty))) : Math.max(1, quantityOf(item));
     await item.update({ [`flags.${MOD}.stock`]: kind === "staple" ? { kind, qty } : { kind, qty: st.kind === "staple" ? st.qty : raw.qty ?? null } });
+  }
+
+  /** GM: sell an item as a formula, or as itself again. */
+  static async #onFormula(event, target) {
+    if (!this.isGM) return;
+    const item = game.actors.get(this.view.shop)?.items.get(target.dataset.id);
+    if (!item) return;
+    const raw = item.flags?.[MOD]?.stock ?? {};
+    const st = cleanStock(raw, quantityOf(item));
+    if (!st.formula) {
+      if (st.kind === "sold") return void ui.notifications.info("Marketplace: make it a staple or rotating first.");
+      if (isTreasure(item)) return void ui.notifications.info("Marketplace: treasure has no formula.");
+      if (!sellable(item)) return void ui.notifications.info("Marketplace: empty it first.");
+      if (!formulaUuid(item)) return void ui.notifications.warn("Marketplace: this item has no compendium or Items-tab entry, so a formula of it would have nothing to point to. Drag it in from the compendium or the Items tab.");
+    }
+    // An unmarked item is a staple of what it has (as everywhere else); the mark keeps its kind and number.
+    const next = { ...raw, kind: st.kind, qty: st.kind === "staple" ? st.qty : raw.qty ?? null, formula: !st.formula };
+    if (!next.formula) next.price = null;
+    await item.update({ [`flags.${MOD}.stock`]: next }, { pmkInternal: true });
+  }
+
+  /** GM: set a formula's price, or clear it back to the price for its level. */
+  async #setFormulaPrice(itemId) {
+    const item = game.actors.get(this.view.shop)?.items.get(itemId);
+    if (!item || !isFormulaItem(item)) return;
+    const st = cleanStock(item.flags?.[MOD]?.stock, quantityOf(item));
+    const auto = formulaPrice(itemLevel(item), itemRarity(item), formulaMults());
+    const gp = await DialogV2().prompt({
+      window: { title: `Formula: ${realItem(item).name}`, icon: "fa-solid fa-scroll" },
+      classes: ["pmk-dialog"],
+      position: { width: 340 },
+      content: `<div class="pmk-form"><label>Price in gp <input type="number" name="gp" value="${st.price != null ? st.price / 100 : ""}" placeholder="${auto / 100}" min="0" step="0.01" autofocus></label>
+        <p class="pmk-hint">Blank: ${esc(formatCp(auto))}, the price for its level.</p></div>`,
+      ok: { label: "Save", icon: "fa-solid fa-check", callback: (event, button) => button.form.elements.gp.value },
+      rejectClose: false,
+    });
+    if (gp === null || gp === undefined) return;
+    const next = { ...item.flags[MOD].stock };
+    const n = Number(gp);
+    if (String(gp).trim() === "" || !Number.isFinite(n) || n < 0) next.price = null;
+    else next.price = Math.round(n * 100);
+    await item.update({ [`flags.${MOD}.stock`]: next }, { pmkInternal: true });
   }
 
   /** GM: set what a staple restocks to. */
@@ -1978,8 +2119,8 @@ class MarketApp extends Base {
       const doc = game.actors.get(shop)?.items.get(item);
       const line = cart.lines.find((l) => l.shop === shop && l.item === item);
       if (!line) return;
-      const per = doc ? priceOf(doc).per : 1;
-      const max = doc ? quantityOf(doc) : line.qty;
+      const per = doc ? itemPrice(doc).per : 1;
+      const max = doc ? (isFormulaItem(doc) ? 1 : quantityOf(doc)) : line.qty;
       this.#setQty("buy", shop, item, Math.max(1, Math.min(max, line.qty + dir * per)));
     } else {
       const { chosen } = buyerChoices(cart);
@@ -2264,10 +2405,11 @@ async function drawStock(shop, market, lines = shopConf(shop).lines, ignore = ne
     const key = sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId);
     const spell = i.system?.spell;
     if (spell) seen.add(`${i.system?.category}:${sourceKey(spell._stats?.compendiumSource ?? spell.flags?.core?.sourceId)}`);
-    else if (key) seen.add(key);
+    else if (key) seen.add(isFormulaItem(i) ? `formula:${key}` : key);
   }
   const out = [];
-  const pick = (pool, n) => drawEntries(pool.filter((e) => !seen.has(sourceKey(e.uuid))), n, maxLevel);
+  // Formulas are kept apart: a shop can sell a sword and the formula for it.
+  const pick = (pool, n, pre = "") => drawEntries(pool.filter((e) => !seen.has(pre + sourceKey(e.uuid))), n, maxLevel);
   const ranges = Object.fromEntries(AMOUNTS.map((a) => [a, game.settings.get(MOD, `amount-${a}`)]));
   const stack = parseRange(game.settings.get(MOD, "stackRange"), [1, 4], 1, 100);
   const spells = async (kind, n, rarity) => {
@@ -2283,7 +2425,11 @@ async function drawStock(shop, market, lines = shopConf(shop).lines, ignore = ne
     const count = lineCount(line, ranges);
     let datas = [];
     if (line.filter === "scrolls") datas = await spells("scroll", count, line.rarity);
-    else {
+    else if (f.formula) {
+      const picks = pick(pool, count, "formula:");
+      for (const e of picks) seen.add(`formula:${sourceKey(e.uuid)}`);
+      datas = (await Promise.all(picks.map((e) => itemFromEntry(e.uuid)))).filter(Boolean);
+    } else {
       // Wands: about half named wands, half magic wands of a spell.
       const made = line.filter === "wands" ? await spells("wand", Math.floor(count / 2), line.rarity) : [];
       const picks = pick(pool, count - made.length);
@@ -2292,12 +2438,13 @@ async function drawStock(shop, market, lines = shopConf(shop).lines, ignore = ne
       datas.push(...made);
     }
     for (const data of datas) {
-      data.system.quantity = Math.max(1, Number(data.system.quantity) || 1) * drawnQty(data, Math.random, stack);
+      // A formula is one copy that never runs out.
+      data.system.quantity = f.formula ? 1 : Math.max(1, Number(data.system.quantity) || 1) * drawnQty(data, Math.random, stack);
       // Shops sell identified goods.
       if (data.system.identification) data.system.identification.status = "identified";
       data.flags ??= {};
-      data.flags[MOD] = { ...(data.flags[MOD] ?? {}), stock: { kind: "rotating" } };
-      out.push({ data, filter: line.filter });
+      data.flags[MOD] = { ...(data.flags[MOD] ?? {}), stock: f.formula ? { kind: "rotating", formula: true } : { kind: "rotating" } };
+      out.push({ data, filter: line.filter, formula: !!f.formula });
     }
   }
   return out;
@@ -2312,9 +2459,10 @@ async function drawStockDialog(shop, market) {
   for (;;) {
     const drawn = await drawStock(shop, market);
     if (!drawn.length) return void ui.notifications.warn("Marketplace: nothing to draw at this shop's level.");
-    const rows = drawn.map(({ data, filter }) => {
-      const cp = priceOf({ system: data.system }).cp;
-      return `<tr><td>${esc(data.name)}</td><td>${esc(filterLabel(filter))}</td><td class="pmk-r">${Number(data.system.level?.value) || 0}</td><td class="pmk-r">×${data.system.quantity}</td><td class="pmk-r">${esc(formatCp(cp))}</td></tr>`;
+    const rows = drawn.map(({ data, filter, formula }) => {
+      const level = Number(data.system.level?.value) || 0;
+      const cp = formula ? formulaPrice(level, data.system.traits?.rarity, formulaMults()) : priceOf({ system: data.system }).cp;
+      return `<tr><td>${formula ? "Formula: " : ""}${esc(data.name)}</td><td>${esc(filterLabel(filter))}</td><td class="pmk-r">${level}</td><td class="pmk-r">${formula ? "copy" : `×${data.system.quantity}`}</td><td class="pmk-r">${esc(formatCp(cp))}</td></tr>`;
     }).join("");
     const choice = await DialogV2().wait({
       window: { title: `${shop.name}: draw stock`, icon: "fa-solid fa-dice" },
@@ -2634,6 +2782,13 @@ Hooks.once("init", () => {
     hint: "How full Fill purse (and a new shop) makes a shop's purse: 100% is one level's party treasure for the shop's level (GM Core), 100 gp below level 1. Lower it for a poor region, raise it for a rich one.",
     scope: "world", config: true, type: Number, default: 100, range: { min: 10, max: 500, step: 10 },
   });
+  for (const r of ["uncommon", "rare"]) {
+    game.settings.register(MOD, `formula-${r}`, {
+      name: `Formula price: ${r} (×)`,
+      hint: r === "uncommon" ? "Multiplies the price of an uncommon formula (the Formula Price table by item level is for common formulas)." : "Multiplies the price of a rare formula.",
+      scope: "world", config: true, type: Number, default: FORMULA_MULT_DEFAULTS[r], range: { min: 1, max: 20, step: 1 }, onChange: () => refresh(),
+    });
+  }
   game.settings.register(MOD, "hostileRefuses", {
     name: "Hostile shopkeepers won't trade",
     hint: "On: a hostile shopkeeper won't buy or sell at all. Off: they trade at the Hostile price change below.",

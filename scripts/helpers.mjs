@@ -110,10 +110,11 @@ export const CATEGORIES = [
   ["runes", "Runes", []],
   ["gear", "Gear", ["equipment", "backpack", "book"]],
   ["treasure", "Treasure", ["treasure"]],
+  ["formulas", "Formulas", []],
 ];
 const CATEGORY_OF = new Map(CATEGORIES.flatMap(([key, , types]) => types.map((t) => [t, key])));
 /** A row's group: by its type, except runes (PF2e marks them by usage, "etched onto a weapon" or "armor"). */
-export const categoryOf = (row) => (String(row?.usage ?? "").startsWith("etched-onto") ? "runes" : CATEGORY_OF.get(row?.type) ?? "gear");
+export const categoryOf = (row) => (row?.formula ? "formulas" : String(row?.usage ?? "").startsWith("etched-onto") ? "runes" : CATEGORY_OF.get(row?.type) ?? "gear");
 
 /** Does a stock row match a search? Every word must appear in its name, its traits or its type. */
 export function matchesQuery(row, query) {
@@ -246,6 +247,12 @@ export function cleanStock(raw, have = 0) {
   const out = { kind };
   if (kind === "staple") out.qty = whole(r.qty, 0, MAX_QTY, Math.max(0, Math.round(Number(have) || 0)));
   if (kind === "sold") out.left = whole(r.left, 0, 9, 2);
+  // Sold as a formula (a copy; the shop keeps it), with the GM's own price in copper if set.
+  if (r.formula && kind !== "sold") {
+    out.formula = true;
+    const price = whole(r.price, 0, 100000000, null);
+    if (price !== null) out.price = price;
+  }
   return out;
 }
 
@@ -263,6 +270,11 @@ export function attitudePct(attitude, pcts, hostileRefuses = true) {
 /** The price change that applies to an item: treasure (gems, art objects) is never discounted, since shops buy it
  * back at its full value; a markup still applies. Design decision, 10 Nov. */
 export const pctFor = (pct, treasure) => (treasure ? Math.max(0, Number(pct) || 0) : Number(pct) || 0);
+
+/** What a buyer pays for a line: the price for the quantity changed by the buyer's percentage. Treasure is never
+ * discounted; a formula is one copy and never treasure. The cart and the GM's client both price lines with this. */
+export const buyPrice = (cp, per, qty, pct, treasure = false, formula = false) =>
+  adjust(priceFor(cp, formula ? 1 : per, formula ? 1 : qty), pctFor(pct, !formula && !!treasure));
 
 /** A price changed by a percentage, rounded up to the copper (never below nothing). */
 export const adjust = (cp, pct) => Math.max(0, Math.ceil((Math.max(0, Number(cp) || 0) * (100 + (Number(pct) || 0))) / 100));
@@ -426,6 +438,9 @@ export const STOCK_FILTERS = [
   // Kits are left out: the system unpacks a kit into its contents when it lands on an actor.
   { id: "gear", label: "Adventuring gear", test: (e) => ["equipment", "backpack", "book"].includes(e.type) && !magical(e) && !usage(e).startsWith("etched") },
   { id: "treasure", label: "Gems and art", test: (e) => e.type === "treasure" && ["gem", "art-object"].includes(cat(e)) },
+  // Formulas: the shop sells a copy of the formula, not the item.
+  { id: "formulas-alchemical", label: "Formulas: alchemical", formula: true, test: (e) => tr(e).includes("alchemical") && e.type !== "treasure" },
+  { id: "formulas", label: "Formulas: any", formula: true, test: (e) => ["weapon", "armor", "shield", "ammo", "consumable", "equipment", "backpack"].includes(e.type) },
 ];
 const FILTER_IDS = new Set(STOCK_FILTERS.map((f) => f.id));
 export const filterLabel = (id) => STOCK_FILTERS.find((f) => f.id === id)?.label ?? id;
@@ -586,6 +601,15 @@ export function restockPlan(items, { keepSold = false } = {}) {
  * the first check (returns false, and the caller notes the time). */
 export const restockDue = (every, last, now) => every > 0 && last !== null && Number.isFinite(last) && now - last >= every * 86400;
 
+/** A formula's uuid in one form, so old and new compendium links match: `Compendium.<pack>.Item.<id>` (older items say
+ * `Compendium.<pack>.<id>`). Anything else is kept as it is; no uuid gives null. */
+export function formulaKey(uuid) {
+  if (!uuid) return null;
+  const parts = String(uuid).split(".");
+  if (parts[0] !== "Compendium" || parts.length < 4) return String(uuid);
+  return `Compendium.${parts[1]}.${parts[2]}.Item.${parts[parts.length - 1]}`;
+}
+
 /** A compendium source as a key that matches old and new forms ("Compendium.pack.ID" and "Compendium.pack.Item.ID"):
  * the pack and the document id. */
 export function sourceKey(uuid) {
@@ -669,3 +693,20 @@ export const canAccept = (offer, actorId) => !!offer && !!actorId && offer.from 
 
 /** What changes hands, in copper, when an offer is taken: positive, the taker pays the poster; negative, the reverse. */
 export const offerNet = (offer) => coinsCp(offer?.want?.cp) - coinsCp(offer?.give?.cp);
+
+/* ------------------------------------------------------------------ */
+/* Formulas (0.4)                                                     */
+/* ------------------------------------------------------------------ */
+
+/** A common formula's price in gold by item level, 0 to 20 (the rules' Formula Price table). */
+export const FORMULA_GP = [0.5, 1, 2, 3, 5, 8, 13, 18, 25, 35, 50, 70, 100, 150, 225, 325, 500, 750, 1200, 2000, 3500];
+/** What uncommon and rare formulas cost, as multiples of a common one (world settings; unique items have none). */
+export const FORMULA_MULT_DEFAULTS = { uncommon: 2, rare: 10 };
+
+/** A formula's price in copper: the table for its level (below 0 as 0, above 20 as 20) times its rarity's multiple. */
+export function formulaPrice(level, rarity = "common", mults = FORMULA_MULT_DEFAULTS) {
+  const lv = Math.max(0, Math.min(20, Math.floor(Number(level) || 0)));
+  const n = Number(mults?.[rarity] ?? FORMULA_MULT_DEFAULTS[rarity] ?? 1);
+  const m = rarity === "common" || !Number.isFinite(n) || n <= 0 ? 1 : n;
+  return Math.round(FORMULA_GP[lv] * 100 * m);
+}

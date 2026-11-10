@@ -57,7 +57,7 @@ A market starts hidden and closed.
 
 ### Shops
 
-**New shop** makes a PF2e merchant in the market's folder, at the market's level, with a full purse, and opens its sheet so you can drag in its stock from the compendium. Any merchant you already have works too: put it in the folder.
+**New shop** makes a PF2e merchant in the market's folder, at the market's level, with a full purse. Drag items onto the shop's page (from a compendium, the Items tab or a sheet) to stock it; one the shop already has as a staple adds to that stack and its number. Any merchant you already have works too: put it in the folder.
 
 On a shop's page:
 
@@ -73,17 +73,21 @@ Shops sell identified goods: an item put in a shop unidentified is identified th
 
 Each item in a shop is one of three kinds, shown to you on its line (click the mark to swap staple and rotating):
 
-- **Staples** come back to their number on every restock (right-click the mark to set it). Anything you drag into a shop is a staple, and a staple that sells out stays on the list as sold out.
+- **Staples** come back to their number on every restock (right-click the mark to set it). Anything you drag onto a shop is a staple, and a staple that sells out stays on the list as sold out.
 - **Rotating** stock is cleared on a restock and drawn again.
 - **Sold** items are what players sold the shop. They're for sale at full price and stay for two restocks by default (gone at the second; a shop setting), so selling the day before market day still leaves a chance to buy back.
 
 Stock a shop had before version 0.2 becomes staples of what it has, the first time a GM loads the world.
 
-A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Few Scrolls" or "4 Potions and oils", from 18 ready filters, each common only, up to uncommon or up to rare. Few, Some, Many and Lots draw a number in a range (1-3, 3-6, 6-10, 10-20 by default; module settings). Items are drawn from the system's compendium up to the shop's level, most of them near that level; consumables (not wands), bombs and ammunition come in stacks of one to four (a setting); scrolls and some wands get a random spell of a rank that fits. Nothing the shop already stocks is drawn again (for scrolls and wands, the same spell); Draw adds to what's there, a restock replaces the rotating stock.
+A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Few Scrolls" or "4 Potions and oils", from 20 ready filters, each common only, up to uncommon or up to rare. Few, Some, Many and Lots draw a number in a range (1-3, 3-6, 6-10, 10-20 by default; module settings). Items are drawn from the system's compendium up to the shop's level, most of them near that level; consumables (not wands), bombs and ammunition come in stacks of one to four (a setting); scrolls and some wands get a random spell of a rank that fits. Nothing the shop already stocks is drawn again (for scrolls and wands, the same spell); Draw adds to what's there, a restock replaces the rotating stock.
 
 - **Draw** shows a draw from the lines to look over, with Draw again, and adds it as rotating stock.
 - **Restock** puts staples back, clears and redraws rotating stock, counts sold items down and fills the purse; you can skip the draw or keep sold items that once. **Restock all** on a market does every shop.
 - A market can **restock every so many days** of game time (Edit): when that much time has passed on the world clock, every shop restocks once, however long it's been. Restock all starts the count again.
+
+### Formulas
+
+Click the scroll mark on an item's line to sell its formula instead of the item. It shows as "Formula: Alchemist's Fire" under Formulas, priced from the Formula Price table by item level (5 sp at level 0, 1 gp at level 1, up to 3,500 gp at 20), times 2 for uncommon and 10 for rare (settings). Right-click the mark to set your own price. An item needs a compendium or Items-tab entry for its formula to point to. The shop keeps it and sells a copy to each buyer: the formula goes into the character's Crafting tab, with a parchment of it that weighs nothing. A character who already knows it can't buy it, and the party stash can't. The stock lines **Formulas: alchemical** and **Formulas: any** draw formulas, one copy each. A basic crafter's book is an ordinary item.
 
 While a shop is browse only, players see its staples, plus the rest of its stock if they saw it open since its last restock ("the stock has changed since your last visit" otherwise).
 
@@ -109,7 +113,7 @@ These are settings, as is whether hostile shopkeepers trade at all. Treasure (ge
 
 Open the **Marketplace**, pick a market and a shop. Click an item for its description; right-click it for its full sheet. **Trading as** chooses which of your characters is shopping (or the party stash, if you own the party); prices are for that character.
 
-**Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off.
+**Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off. A formula is one copy: buying it puts it in your character's Crafting tab, with a parchment of it.
 
 **Selling.** A shop's **Sell** tab lists what your character carries, with the shop's offer for each. Click the offer button on a line to offer one more (or one batch), right-click for one fewer, or type how many. Unidentified items have to be identified first, and containers emptied. Something worth nothing sells for nothing, a way to get rid of it.
 
@@ -130,6 +134,7 @@ As with everything in Foundry, every actor and every world setting reaches every
 - **Pathfinder sheet look: color** (each user, Red): the color of the Pathfinder sheet look: Red, Green, Blue, Purple, Brown or Black.
 - **Stock line size: Few, Some, Many, Lots** (world, 1-3, 3-6, 6-10, 10-20): how many a rotating stock line of that size draws.
 - **Drawn consumables per stack** (world, 1-4): how many of each consumable, bomb or ammunition a draw gives, in batches.
+- **Formula price: uncommon, rare** (world, ×2, ×10): what an uncommon or rare formula costs, as a multiple of a common one.
 - **Shop purse size (%)** (world, 100): how full Fill purse and new shops make a purse. Lower it for a poor region, raise it for a rich one.
 - **Hostile shopkeepers won't trade** (world, on): off lets them trade at the Hostile price change.
 - **Price change** for each attitude (world): in percent, positive costs more, negative is a discount. Buying only; treasure is never discounted.

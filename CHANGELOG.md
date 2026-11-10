@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+Formulas.
+
+- **Formulas**: the GM marks a shop item to sell its formula instead. It's priced by item level from the Formula Price table, times 2 for uncommon and 10 for rare (world settings), or at the GM's own price. The shop keeps it; a buyer learns it in the Crafting tab and gets a parchment that weighs nothing. Not for a character who already knows it, nor for the party stash.
+- Two new stock lines, **Formulas: alchemical** and **Formulas: any**, draw formulas, one copy each.
+- **Drag items onto a shop's page** to stock them, from a compendium, the Items tab or a sheet. One the shop already has as a staple adds to that stack and its number.
+
 ## 0.3.0
 
 The Trade Post.

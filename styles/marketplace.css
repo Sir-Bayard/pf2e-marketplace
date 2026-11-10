@@ -420,6 +420,9 @@
 .pmk .pmk-kind:hover { color: var(--pmk-ink); text-shadow: none; }
 .pmk .pmk-kind-staple { color: var(--pmk-gold); }
 .pmk .pmk-kind-sold { border-style: dashed; }
+.pmk .pmk-fmark { margin-left: 4px; font-size: 10px; color: var(--pmk-dim); opacity: 0.45; cursor: pointer; vertical-align: 1px; }
+.pmk .pmk-fmark:hover { opacity: 1; color: var(--pmk-ink); text-shadow: none; }
+.pmk .pmk-fmark.on { opacity: 1; color: var(--pmk-gold); }
 
 /* Drawing stock (0.2) */
 .pmk-dialog .pmk-slines { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
