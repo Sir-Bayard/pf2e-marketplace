@@ -214,19 +214,31 @@ function tradeMarketFor(shopId, user) {
 const shopConf = (actor) => cleanShop(actor?.flags?.[MOD]?.shop);
 const ATTITUDES_MOD = "pf2e-npc-attitudes";
 
-/** The shopkeeper's attitude toward a buyer: with PF2e NPC Attitudes on and a shopkeeper set, their attitude toward
- * that character (or their general one) from its record; otherwise the shop's own setting. The record is read
- * directly, the same way on every client, so a player sees the price the GM's client will charge. */
-function attitudeFor(shop, buyer) {
+/**
+ * The attitude that sets a buyer's prices. With PF2e NPC Attitudes on and a shopkeeper who has a record there:
+ * - the party sees their true attitude ("shown" is "same"): that attitude, or the one toward this character if set;
+ * - the party is shown the true attitude picked by hand: that attitude (per-character ones aren't shown then);
+ * - the party is shown something else (a disguise, or Unknown): Indifferent, normal prices (Patrick, 9 Nov), so a
+ *   secretly hostile merchant still trades and a pretended friend gives no discount, and prices give nothing away.
+ * Otherwise the shop's own setting. The record is read straight from the actor, the same way on every client, so a
+ * player sees the price the GM's client will charge.
+ */
+function attitudeInfo(shop, buyer) {
   const conf = shopConf(shop);
   const keeper = conf.keeper ? game.actors.get(conf.keeper) : null;
-  if (keeper && game.modules.get(ATTITUDES_MOD)?.active) {
-    const rec = keeper.flags?.[ATTITUDES_MOD]?.npc;
-    const a = (buyer && buyer.type === "character" ? rec?.pcs?.[buyer.id] : null) || rec?.attitude;
-    if (ATTITUDES.includes(a)) return a;
+  const rec = keeper && game.modules.get(ATTITUDES_MOD)?.active ? keeper.flags?.[ATTITUDES_MOD]?.npc : null;
+  if (rec && ATTITUDES.includes(rec.attitude)) {
+    const shown = rec.shown ?? "same";
+    if (shown === "same") {
+      const own = buyer && buyer.type === "character" ? rec.pcs?.[buyer.id] : null;
+      return { attitude: ATTITUDES.includes(own) ? own : rec.attitude, real: rec.attitude, masked: false };
+    }
+    if (shown === rec.attitude) return { attitude: rec.attitude, real: rec.attitude, masked: false };
+    return { attitude: "indifferent", real: rec.attitude, shown, masked: true };
   }
-  return conf.attitude;
+  return { attitude: conf.attitude, real: conf.attitude, masked: false };
 }
+const attitudeFor = (shop, buyer) => attitudeInfo(shop, buyer).attitude;
 const pricePcts = () => Object.fromEntries(ATTITUDES.map((a) => [a, game.settings.get(MOD, `price-${a}`)]));
 /** The price change for this buyer at this shop in percent, or null when the shop won't trade with them. */
 const pricePct = (shop, buyer) => attitudePct(attitudeFor(shop, buyer), pricePcts(), game.settings.get(MOD, "hostileRefuses"));
@@ -830,8 +842,11 @@ class MarketApp extends Base {
         <button type="button" data-action="pmkShopSettings"><i class="fa-solid fa-sliders"></i> Settings</button>
         <button type="button" data-action="pmkSheet"><i class="fa-solid fa-file-invoice"></i> Merchant sheet</button>
       </div>` : "";
+    const info = attitudeInfo(actor, null);
+    const gmAtt = !info.masked ? `${ATTITUDE_LABEL[info.attitude]} in general`
+      : `${ATTITUDE_LABEL[info.real]}, shown as ${ATTITUDE_LABEL[info.shown] ?? "Unknown"}: normal prices`;
     const keeperHTML = face ? `<div class="pmk-keeper"><img src="${esc(face.img)}" alt=""><div><strong>${esc(face.name)}</strong>
-        ${this.isGM ? `<span class="pmk-dim">${esc(ATTITUDE_LABEL[attitudeFor(actor, null)])} in general</span>` : ""}</div></div>`
+        ${this.isGM ? `<span class="pmk-dim">${esc(gmAtt)}</span>` : ""}</div></div>`
       : this.isGM ? `<p class="pmk-hint">Drag an NPC onto this shop to make them its shopkeeper.</p>` : "";
     const tradingAs = buyers.length ? `<label class="pmk-buyer">Trading as <select name="pmk-buyer">${buyers.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}</option>`).join("")}</select></label>` : "";
     const priceLine = !chosen ? "" : pct === null ? `<p class="pmk-status pmk-warnbox">${esc(shopFace(actor))} won't trade with ${esc(chosen.name)}.</p>`
@@ -1368,7 +1383,7 @@ async function shopSettingsDialog(shop, market) {
       <label>Pays for treasure (% of its value) <input type="number" name="treasureRate" value="${c.treasureRate}" min="0" max="1000" step="5"></label>
       <label class="pmk-check"><input type="checkbox" name="unlimited" ${c.unlimited ? "checked" : ""}> Unlimited purse (never runs out of money)</label>
       <label>Shopkeeper's attitude <select name="attitude">${opts}</select></label>
-      <p class="pmk-hint">${keeper ? `Shopkeeper: <strong>${esc(keeper.name)}</strong>. ` : "No shopkeeper: drag an NPC onto the shop to set one. "}${att && keeper ? "Their attitude in NPC Attitudes counts first (toward each character, if set); this one is used when they have none." : "Attitude changes what players pay (the module settings say by how much)."}</p>
+      <p class="pmk-hint">${keeper ? `Shopkeeper: <strong>${esc(keeper.name)}</strong>. ` : "No shopkeeper: drag an NPC onto the shop to set one. "}${att && keeper ? "Their attitude in NPC Attitudes counts first (toward each character, if set). If the party is shown a different attitude than the real one, prices are normal. This one is used when they have no attitude there." : "Attitude changes what players pay (the module settings say by how much)."}</p>
       ${keeper ? `<label class="pmk-check"><input type="checkbox" name="clearKeeper"> No shopkeeper</label>` : ""}
     </div>`,
     buttons: [
