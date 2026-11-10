@@ -115,6 +115,10 @@ Open the **Marketplace**, pick a market and a shop. Click an item for its descri
 
 **The cart and checkout.** Purchases and sales go into one cart, from any open shop. The bar at the top of a shop page keeps a running tally (what you're buying, what you're selling, and what you pay or get) with a **Checkout** button that opens the cart. The cart lists everything by shop, with minus and plus buttons for each quantity, and one button makes the whole trade. Sales are settled with purchases: at each shop only the difference changes hands, so selling your old armor can pay for the new, and a shop with an empty purse can still take a trade-in against what you buy from it. The GM's client checks the stock, the prices, your goods and your money, moves the coins (making change from bigger coins as the system does) and the items; what you buy arrives identified and stacked with what you have. If anything changed since you looked, nothing happens and you're told why. If the cart changed after the total you saw (a quantity typed a moment before), the button asks you to look again first.
 
+### The Trade Post
+
+**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
+
 A GM has to be logged in for any trade: Foundry only lets a GM's client change the merchants. Browsing works without one.
 
 ## Privacy

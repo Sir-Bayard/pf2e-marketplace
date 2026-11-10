@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+The Trade Post.
+
+- **Offers between characters**: a character puts up items and coins for coins from anyone, or for coins and items of one character. Accepting swaps everything at once through the GM's client: the items, as they are, and only the difference in coins. Offers aren't held in escrow; they're checked again when accepted, and can be taken down any time. Up to 10 offers per character; the party stash doesn't trade here.
+- The GM sees every offer, can remove any, and the trade log lists trades between characters.
+
 ## 0.2.0
 
 Stock tools.

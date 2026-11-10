@@ -7,11 +7,11 @@
 
 import {
   esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTradeShop, MAX_LINES, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, takeFromCart, listOf,
-  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, cleanStock, nextStockKind, STOCK_FILTERS, filterLabel, cleanStockLines, drawable, drawEntries, drawnQty, scribable, drawSpells, MAX_STOCK_LINES, restockPlan, restockDue, sourceKey, AMOUNTS, AMOUNT_LABEL, AMOUNT_DEFAULTS, LINE_RARITIES, rarityAllowed, parseRange, lineCount, addLogEntry, cleanLogEntry, handPricedNote,
+  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, cleanStock, nextStockKind, STOCK_FILTERS, filterLabel, cleanStockLines, drawable, drawEntries, drawnQty, scribable, drawSpells, MAX_STOCK_LINES, restockPlan, restockDue, sourceKey, AMOUNTS, AMOUNT_LABEL, AMOUNT_DEFAULTS, LINE_RARITIES, rarityAllowed, parseRange, lineCount, cleanOffer, cleanOffers, canAccept, offerNet, coinsCp, MAX_OFFERS_EACH, MAX_OFFERS, addLogEntry, cleanLogEntry, handPricedNote,
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
-  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
+  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, tradeRows, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
 } from "./pf2e.mjs";
 
 const MOD = "pf2e-marketplace";
@@ -706,10 +706,208 @@ function clearTraded(lines, sales) {
   refresh();
 }
 
+/* ------------------------------------------------------------------ */
+/* The Trade Post (0.3): offers between players' characters           */
+/* ------------------------------------------------------------------ */
+
+const offers = () => cleanOffers(game.settings.get(MOD, "offers"));
+let offerWrites = Promise.resolve();
+/** Change the offers (the GM's client), one write at a time, each on the latest copy. */
+function mutateOffers(fn) {
+  const run = offerWrites.catch(() => null).then(async () => {
+    const list = offers();
+    fn(list);
+    await game.settings.set(MOD, "offers", cleanOffers(list));
+  });
+  offerWrites = run.catch(() => null);
+  return run;
+}
+/** Characters a user can trade for at the Trade Post: their characters, never the party stash (a design decision). */
+const tradersFor = (user) => buyersFor(user, game.actors.contents).filter((a) => a.type === "character");
+/** Characters an offer can be for: any character a player owns. */
+const offerTargets = () => game.actors.filter((a) => a.type === "character" && a.hasPlayerOwner);
+
+/** Is every item of an offer's side still there, in that number? */
+function sideHas(actor, items) {
+  const rows = new Map(tradeRows(actor).map((r) => [r.id, r]));
+  for (const l of items) {
+    const r = rows.get(l.item);
+    // An item renamed or identified since the offer went up isn't what the offer shows.
+    if (!r || r.why || r.qty < l.qty || (l.name && r.name !== l.name)) return false;
+  }
+  return true;
+}
+
+/** Can this offer be taken by `taker` now? Null when it can, else why not. */
+function offerProblem(offer, taker) {
+  const from = game.actors.get(offer.from);
+  if (!from) return "The character who posted it is gone.";
+  if (!sideHas(from, offer.give.items)) return `${from.name} no longer has everything offered.`;
+  const net = offerNet(offer);
+  if (net < 0 && fundsCp(from) < -net) return `${from.name} hasn't the money offered.`;
+  if (!taker) return null;
+  if (!canAccept(offer, taker.id)) return offer.from === taker.id ? "Your own offer." : "It's for someone else.";
+  if (!sideHas(taker, offer.want.items)) return `${taker.name} doesn't have everything asked for.`;
+  if (net > 0 && fundsCp(taker) < net) return `${taker.name} hasn't enough money.`;
+  return null;
+}
+
+/** Post an offer (the GM's client): the poster's own character, items that are theirs to trade, a target that's a
+ * player's character, at most 10 offers per character. */
+async function processPost(msg, sender) {
+  const o = cleanOffer({ ...msg.offer, id: foundry.utils.randomID(16), user: sender.id, created: Date.now() });
+  if (!o) throw new Refused("an offer needs something offered, and something asked for or offered.");
+  const from = game.actors.get(o.from);
+  if (!from || !tradersFor(sender).some((a) => a.id === from.id)) throw new Refused("you can't post for that character.");
+  if (o.to && !offerTargets().some((a) => a.id === o.to)) throw new Refused("that character can't trade here.");
+  const fromRows = new Map(tradeRows(from).map((r) => [r.id, r]));
+  for (const l of o.give.items) {
+    const r = fromRows.get(l.item);
+    if (!r || r.why || r.qty < l.qty) throw new Refused(`${from.name} can't offer ${r?.name ?? "that"} as it is.`);
+    Object.assign(l, { name: r.name, img: r.img });
+  }
+  if (o.want.items.length) {
+    const to = game.actors.get(o.to);
+    const toRows = new Map(tradeRows(to).map((r) => [r.id, r]));
+    for (const l of o.want.items) {
+      const r = toRows.get(l.item);
+      if (!r || r.why || r.qty < l.qty) throw new Refused(`${to.name} hasn't ${r?.name ?? "that"} to trade.`);
+      Object.assign(l, { name: r.name, img: r.img });
+    }
+  }
+  if (offers().filter((x) => x.from === from.id).length >= MAX_OFFERS_EACH) throw new Refused(`${from.name} already has ${MAX_OFFERS_EACH} offers up.`);
+  if (offers().length >= MAX_OFFERS) throw new Refused("the Trade Post is full. Ask the GM to clear some offers.");
+  const problem = offerProblem(o, null);
+  if (problem) throw new Refused(problem);
+  await mutateOffers((list) => list.unshift(o));
+  return { text: `${from.name}'s offer is up at the Trade Post.`, posted: true };
+}
+
+/** Take an offer down: the poster, or a GM. */
+async function processWithdraw(msg, sender) {
+  const o = offers().find((x) => x.id === msg.id);
+  if (!o) throw new Refused("that offer is already gone.");
+  if (!sender.isGM && !tradersFor(sender).some((a) => a.id === o.from)) throw new Refused("it isn't your offer.");
+  await mutateOffers((list) => {
+    const i = list.findIndex((x) => x.id === o.id);
+    if (i >= 0) list.splice(i, 1);
+  });
+  return { text: "The offer is down." };
+}
+
+/** An item's data as it moves between characters: the quantity, out of any container, carried, the module's marks
+ * dropped. Identification stays as it was. */
+function tradeCopy(item, qty) {
+  const data = item.toObject();
+  delete data._id;
+  data.system ??= {};
+  data.system.quantity = qty;
+  data.system.containerId = null;
+  const worn = item.system?.usage?.type === "worn" && item.system?.usage?.where;
+  data.system.equipped = worn ? { carryType: "worn", inSlot: false } : { carryType: "worn" };
+  if (data.flags?.[MOD]) delete data.flags[MOD];
+  return data;
+}
+
+/** Take an offer (the GM's client): everything checked again, then both sides' items out, the money settled (only the
+ * difference moves), the items in, the offer down. A step that fails undoes the ones before it. */
+async function processAccept(msg, sender) {
+  const o = offers().find((x) => x.id === msg.id);
+  if (!o) throw new Refused("that offer is gone.");
+  const taker = game.actors.get(String(msg.actor ?? ""));
+  if (!taker || !tradersFor(sender).some((a) => a.id === taker.id)) throw new Refused("you can't trade for that character.");
+  const from = game.actors.get(o.from);
+  const problem = offerProblem(o, taker);
+  if (problem) throw new Refused(problem);
+  const plan = [
+    ...o.give.items.map((l) => ({ item: from.items.get(l.item), qty: l.qty, to: taker })),
+    ...o.want.items.map((l) => ({ item: taker.items.get(l.item), qty: l.qty, to: from })),
+  ];
+  const copies = plan.map((p) => ({ to: p.to, data: tradeCopy(p.item, p.qty) }));
+  const net = offerNet(o);
+  const taken = await takeAll(plan, "an inventory changed. Look at the offer again.");
+  const delivered = [];
+  let paid = null;
+  const undo = async () => {
+    for (const d of delivered.reverse()) await undeliver(d);
+    if (paid) await receive(paid[0], paid[1]).catch((e) => console.error(`${MOD} | couldn't give ${paid[0].name} back ${paid[1]} cp`, e));
+    await putBack(taken);
+  };
+  const [payer, payee, amount] = net > 0 ? [taker, from, net] : [from, taker, -net];
+  if (amount > 0) {
+    if (!(await pay(payer, amount).catch(() => false))) {
+      await undo();
+      throw new Refused(`${payer.name} hasn't enough money.`);
+    }
+    paid = [payer, amount];
+  }
+  try {
+    for (const side of [taker, from]) {
+      const datas = copies.filter((c) => c.to === side).map((c) => c.data);
+      if (datas.length) delivered.push(await deliver(side, datas));
+    }
+  } catch (err) {
+    await undo();
+    throw err;
+  }
+  let unpaid = "";
+  if (amount > 0) await receive(payee, amount).catch((err) => {
+    console.error(`${MOD} | ${payee.name} wasn't paid ${amount} cp`, err);
+    unpaid = `${payee.name} wasn't paid ${formatCp(amount)}`;
+  });
+  // The trade stands now: log it before anything else can fail.
+  logTrade({ kind: "trade", user: game.users.get(o.user)?.name ?? "", actor: from.name, shop: taker.name, market: "Trade Post", items: o.give.items.map((l) => ({ name: l.name, qty: l.qty })), got: o.want.items.map((l) => ({ name: l.name, qty: l.qty })), net, cp: Math.abs(net), note: unpaid });
+  try {
+    await mutateOffers((list) => {
+      const i = list.findIndex((x) => x.id === o.id);
+      if (i >= 0) list.splice(i, 1);
+    });
+  } catch (err) {
+    console.error(`${MOD} | the taken offer couldn't be taken down`, err);
+  }
+  const text = `${taker.name} took ${from.name}'s offer.`;
+  if (o.user && o.user !== sender.id) game.socket.emit(SOCKET, { type: "notice", users: [o.user], text });
+  return { text: text + (unpaid ? " Part of the money didn't arrive; the GM has been told." : ""), unpaid };
+}
+
+/** A Trade Post request: the primary GM acts at once; anyone else asks the GM's client. */
+let posting = false;
+async function postRequest(msg) {
+  if (posting || waitingFor(msg.type)) return;
+  if (isPrimaryGM()) {
+    posting = true;
+    refresh();
+    try {
+      const r = await queued(() => runPost(msg, game.user));
+      ui.notifications.info(esc(`Marketplace: ${r.text}`));
+      if (r.posted) for (const app of openApps) app.view.draft = null;
+    } catch (err) {
+      if (err instanceof Refused) ui.notifications.warn(esc(`Marketplace: ${err.message}`));
+      else {
+        console.error(`${MOD} | the Trade Post request failed`, err);
+        ui.notifications.error("Marketplace: that didn't work. See the console.");
+      }
+    } finally {
+      posting = false;
+      refresh();
+    }
+    return;
+  }
+  askGM(msg);
+}
+const runPost = (msg, sender) => (msg.type === "post" ? processPost(msg, sender) : msg.type === "withdraw" ? processWithdraw(msg, sender) : processAccept(msg, sender));
+const POST_TYPES = new Set(["post", "withdraw", "accept"]);
+
 /** The active GM's client acts on a player's request. */
 async function onRequest(msg, sender) {
   const reply = (extra) => game.socket.emit(SOCKET, { users: [sender.id], rid: typeof msg.rid === "string" ? msg.rid : null, ...extra });
   try {
+    if (POST_TYPES.has(msg.type)) {
+      const r = await queued(() => runPost(msg, sender));
+      reply({ type: "done", what: msg.type, text: r.text });
+      if (msg.type === "accept") ui.notifications[r.unpaid ? "warn" : "info"](esc(`Marketplace: ${sender.name}: ${r.text}${r.unpaid ? ` Check the money: ${r.unpaid}.` : ""}`), r.unpaid ? { permanent: true } : {});
+      return;
+    }
     if (msg.type !== "trade") return;
     const r = await queued(() => processTrade(msg, sender));
     reply({ type: "done", text: tradeText(r) + (r.unpaid ? " Part of the money didn't arrive; the GM has been told." : ""), lines: r.lines, sales: r.sales });
@@ -736,12 +934,13 @@ function onSocket(msg, senderId) {
       }
     } else if (msg.type === "gmbye" && sender?.id === game.user.id) gmTabs.delete(msg.client);
     else if (msg.type === "claim" && sender?.isGM && typeof msg.key === "string") handled.set(msg.key, Date.now());
-    else if (sender && sender.id !== game.user.id && msg.type === "trade") takeRequest(msg, sender);
+    else if (sender && sender.id !== game.user.id && (msg.type === "trade" || POST_TYPES.has(msg.type))) takeRequest(msg, sender);
     // An assistant GM's own trades go through the primary GM's client too, and come back like a player's.
-    if (msg.type !== "done" && msg.type !== "fail") return;
+    if (msg.type !== "done" && msg.type !== "fail" && msg.type !== "notice") return;
   }
   if (!sender?.isGM) return;
   if (Array.isArray(msg.users) && !msg.users.includes(game.user.id)) return;
+  if (msg.type === "notice") return void ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "")}`));
   if (msg.type !== "done" && msg.type !== "fail") return;
   // Only answers to this client's own requests (a GM answers the user, who may have two windows open).
   if (!answered(msg.rid)) return;
@@ -750,8 +949,10 @@ function onSocket(msg, senderId) {
     ui.notifications.warn(esc(String(msg.text ?? "Marketplace: that didn't work.")));
     return refresh();
   }
-  clearTraded(msg.lines, msg.sales);
+  if (msg.what === "post") for (const app of openApps) app.view.draft = null;
+  if (!msg.what) clearTraded(msg.lines, msg.sales);
   ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "Done.")}`));
+  refresh();
 }
 
 /** Make the trade in the cart: a GM at once; a player asks the GM's client. */
@@ -908,6 +1109,12 @@ class MarketApp extends Base {
       pmkTab: MarketApp.#onTab,
       pmkSellAdd: MarketApp.#onSellAdd,
       pmkKind: MarketApp.#onKind,
+      pmkPost: MarketApp.#onPost,
+      pmkNewOffer: MarketApp.#onNewOffer,
+      pmkOfferCancel: MarketApp.#onOfferCancel,
+      pmkOfferPost: MarketApp.#onOfferPost,
+      pmkAccept: MarketApp.#onAccept,
+      pmkWithdraw: MarketApp.#onWithdraw,
       pmkStep: MarketApp.#onStep,
       pmkCloseShop: MarketApp.#onCloseShop,
       pmkFill: MarketApp.#onFill,
@@ -938,6 +1145,9 @@ class MarketApp extends Base {
   }
 
   async _renderHTML() {
+    // Keep what's typed into a new offer through a redraw (but not right after the form changed who it's for).
+    if (this.view.draft && !this.#draftSkip) this.#readDraft();
+    this.#draftSkip = false;
     const markets = this.markets();
     let market = markets.find((m) => m.id === this.view.market) ?? null;
     if (!market) {
@@ -960,8 +1170,12 @@ class MarketApp extends Base {
 
     const cart = loadCart();
     const inCart = cart.lines.length + salesOf(cart, buyerChoices(cart).chosen).length;
+    // Offers one of this user's characters could take.
+    const myChars = tradersFor(game.user).map((a) => a.id);
+    const postCount = this.isGM ? offers().length : offers().filter((o) => myChars.some((id) => canAccept(o, id)) && !myChars.includes(o.from)).length;
     let main;
-    if (this.view.log && this.isGM) main = this.#logHTML();
+    if (this.view.post) main = this.#postHTML();
+    else if (this.view.log && this.isGM) main = this.#logHTML();
     else if (this.view.cart) main = this.#cartHTML(cart);
     else if (!market) main = this.#emptyHTML();
     else if (this.view.shop) main = await this.#shopHTML(market, game.actors.get(this.view.shop));
@@ -969,12 +1183,13 @@ class MarketApp extends Base {
 
     const look = this.look ?? getLook();
     // Parchment pages: everywhere in the Pathfinder sheet look; markets and shops in the hybrid one.
-    const paper = look === "pf2e" || (look === "hybrid" && market && !this.view.cart && !(this.view.log && this.isGM));
+    const paper = look === "pf2e" || (look === "hybrid" && market && !this.view.cart && !this.view.post && !(this.view.log && this.isGM));
     return `<div class="pmk-shell">
       <nav class="pmk-rail">
         <div class="pmk-railhead">Markets</div>
         <div class="pmk-mks">${rail}</div>
         ${this.isGM ? `<a class="pmk-mk pmk-loglink ${this.view.log ? "active" : ""}" data-action="pmkLog"><i class="fa-solid fa-scroll pmk-noimg"></i><span class="pmk-mkn">Trade log</span></a>` : ""}
+        <a class="pmk-mk pmk-postlink ${this.view.post ? "active" : ""}" data-action="pmkPost"><i class="fa-solid fa-handshake pmk-noimg"></i><span class="pmk-mkn">Trade Post</span>${postCount ? `<span class="pmk-count">${postCount}</span>` : ""}</a>
         <a class="pmk-mk pmk-cartlink ${this.view.cart ? "active" : ""}" data-action="pmkCart"><i class="fa-solid fa-cart-shopping pmk-noimg"></i><span class="pmk-mkn">Cart</span>${inCart ? `<span class="pmk-count">${inCart}</span>` : ""}</a>
         ${this.isGM ? `<button type="button" class="pmk-newmk" data-action="pmkNewMarket"><i class="fa-solid fa-plus"></i> <span>New market</span></button>` : ""}
       </nav>
@@ -1212,16 +1427,111 @@ class MarketApp extends Base {
       </div>`;
   }
 
+  /** The Trade Post: offers between players' characters. */
+  #postHTML() {
+    // A GM watches the Trade Post: no character of their own, so they remove offers but never accept or post for one.
+    const traders = this.isGM ? [] : tradersFor(game.user);
+    const me = traders.find((a) => a.id === this.view.postAs) ?? traders[0] ?? null;
+    if (this.view.draft && me) return this.#draftHTML(me, traders);
+    const list = offers();
+    const mine = new Set(traders.map((a) => a.id));
+    const chip = (l) => `<span class="pmk-chip"><img src="${esc(l.img)}" alt="">${esc(l.name)}${l.qty > 1 ? ` ×${l.qty}` : ""}</span>`;
+    // Offers for the character trading, open to them, theirs or another of the user's (a GM sees them all below).
+    const side = (s) => [...s.items.map(chip), s.cp ? `<span class="pmk-chip pmk-coins"><i class="fa-solid fa-coins"></i>${esc(formatCp(s.cp))}</span>` : ""].join("") || `<span class="pmk-dim">nothing</span>`;
+    const card = (o) => {
+      const from = game.actors.get(o.from);
+      const to = o.to ? game.actors.get(o.to) : null;
+      const own = mine.has(o.from);
+      const canTake = !!me && canAccept(o, me.id);
+      const problem = canTake ? offerProblem(o, me) : offerProblem(o, null);
+      const act = own || this.isGM
+        ? `<button type="button" data-action="pmkWithdraw" data-id="${esc(o.id)}"><i class="fa-solid fa-xmark"></i> ${own ? "Take down" : "Remove"}</button>` : "";
+      const take = canTake ? (posting || waitingFor("accept") ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> Waiting...</button>`
+        : `<button type="button" data-action="pmkAccept" data-id="${esc(o.id)}" ${problem ? "disabled" : ""}><i class="fa-solid fa-handshake"></i> Accept</button>`) : "";
+      return `<div class="pmk-offer ${problem ? "pmk-stale" : ""}">
+        <div class="pmk-ohead"><img src="${esc(from?.img ?? "")}" alt=""><strong>${esc(from?.name ?? "Gone")}</strong>
+          <span class="pmk-dim">${o.to ? `for ${esc(to?.name ?? "a character who's gone")}` : "for anyone"}</span><span class="pmk-gap"></span>${take}${act}</div>
+        <div class="pmk-oside"><span class="pmk-olabel">Gives</span>${side(o.give)}</div>
+        <div class="pmk-oside"><span class="pmk-olabel">Wants</span>${side(o.want)}</div>
+        ${o.note ? `<p class="pmk-onote">${esc(o.note)}</p>` : ""}
+        ${problem && (canTake || own) ? `<p class="pmk-note pmk-warn">${esc(problem)}</p>` : ""}
+      </div>`;
+    };
+    // Each offer once: for the character trading, open to them, theirs or another of the user's, or (for the GM) others.
+    const forMe = list.filter((o) => me && o.to === me.id);
+    const open = list.filter((o) => !o.to && o.from !== me?.id && !mine.has(o.from));
+    const own = list.filter((o) => mine.has(o.from) && !forMe.includes(o));
+    const others = this.isGM ? list.filter((o) => !forMe.includes(o) && !open.includes(o) && !own.includes(o)) : [];
+    const section = (title, items) => (items.length ? `<h3 class="pmk-h">${title}</h3><div class="pmk-offers">${items.map(card).join("")}</div>` : "");
+    const as = traders.length ? `<label class="pmk-buyer">Trading as <select name="pmk-postas">${traders.map((a) => `<option value="${esc(a.id)}" ${a.id === me?.id ? "selected" : ""}>${esc(a.name)}: ${esc(formatCp(fundsCp(a), "no money"))}</option>`).join("")}</select></label>` : "";
+    const body = section("For you", forMe) + section("Open offers", open) + section("Between other characters", others) + section("Your offers", own);
+    return `<div class="pmk-postview">
+      <header class="pmk-shead"><a class="pmk-back" data-action="pmkCartBack"><i class="fa-solid fa-arrow-left"></i> Back to the market</a><h2>Trade Post</h2></header>
+      <div class="pmk-gmbar">${as}<span class="pmk-gap"></span>${me ? `<button type="button" data-action="pmkNewOffer"><i class="fa-solid fa-plus"></i> New offer</button>` : ""}</div>
+      ${body || `<p class="pmk-none">No offers yet.</p>`}
+    </div>`;
+  }
+
+  /** A new offer: what the character gives, who it's for, and what they want. */
+  #draftHTML(me, traders) {
+    if (!me) return `<p class="pmk-none">You have no character to trade for.</p>`;
+    const d = this.view.draft;
+    const targets = offerTargets().filter((a) => a.id !== me.id);
+    const to = targets.find((a) => a.id === d.to) ?? null;
+    const rows = (actor, key, picked) => tradeRows(actor).map((r) => `<div class="pmk-srow ${r.why ? "pmk-no" : ""}">
+        <img src="${esc(r.img)}" alt=""><span class="pmk-rn">${esc(r.name)}${r.why ? `<span class="pmk-note">${esc(r.why)}</span>` : ""}</span>
+        <span class="pmk-qty">×${r.qty}</span>
+        ${r.why ? "<span></span>" : `<input type="number" class="pmk-qtyin" name="${key}" data-item="${esc(r.id)}" value="${picked[r.id] ?? 0}" min="0" max="${r.qty}" step="1">`}
+        <span></span><span></span></div>`).join("") || `<p class="pmk-none">Nothing to trade.</p>`;
+    const coins = (key, cp) => {
+      const c = { gp: Math.floor(cp / 100), sp: Math.floor((cp % 100) / 10), cp: cp % 10 };
+      return `<span class="pmk-coinsin">${["gp", "sp", "cp"].map((k) => `<label><input type="number" name="${key}-${k}" value="${c[k] || ""}" min="0" step="1" placeholder="0"> ${k}</label>`).join("")}</span>`;
+    };
+    return `<div class="pmk-postview">
+      <header class="pmk-shead"><a class="pmk-back" data-action="pmkOfferCancel"><i class="fa-solid fa-arrow-left"></i> Trade Post</a><h2>New offer from ${esc(me.name)}</h2></header>
+      <label class="pmk-buyer">For <select name="d-to"><option value="">Anyone</option>${targets.map((a) => `<option value="${esc(a.id)}" ${a.id === to?.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
+      <h3 class="pmk-h">${esc(me.name)} gives</h3>
+      <div class="pmk-stock">${rows(me, "d-give", d.give)}</div>
+      <div class="pmk-buyer">Coins ${coins("d-gcp", d.giveCp)}</div>
+      <h3 class="pmk-h">${to ? `${esc(to.name)} gives` : "Asking for"}</h3>
+      ${to ? `<div class="pmk-stock">${rows(to, "d-want", d.want)}</div>` : `<p class="pmk-hint">An offer for anyone can only ask for coins.</p>`}
+      <div class="pmk-buyer">Coins ${coins("d-wcp", d.wantCp)}</div>
+      <label class="pmk-buyer pmk-wide">Note <input type="text" name="d-note" value="${esc(d.note)}" maxlength="300" placeholder="Optional"></label>
+      <div class="pmk-checkout"><button type="button" data-action="pmkOfferCancel">Cancel</button>
+        ${posting || waitingFor("post") ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> Waiting...</button>` : `<button type="button" data-action="pmkOfferPost"><i class="fa-solid fa-thumbtack"></i> Post the offer</button>`}</div>
+    </div>`;
+  }
+
+  /** Read the new offer's form into the view. */
+  #draftSkip = false;
+  #readDraft() {
+    const d = this.view.draft;
+    // Only while the form is on screen: a redraw from elsewhere in the window mustn't wipe it.
+    if (!d || !this.element?.querySelector('[name="d-note"]')) return;
+    const el = this.element;
+    const v = (name) => el.querySelector(`[name="${name}"]`)?.value ?? "";
+    const qtys = (key) => Object.fromEntries([...el.querySelectorAll(`input[name="${key}"]`)].map((i) => [i.dataset.item, Math.max(0, Math.floor(Number(i.value)) || 0)]).filter(([, n]) => n > 0));
+    if (el.querySelector('[name="d-to"]')) d.to = v("d-to") || null;
+    d.give = qtys("d-give");
+    d.want = qtys("d-want");
+    d.giveCp = coinsCp({ gp: v("d-gcp-gp"), sp: v("d-gcp-sp"), cp: v("d-gcp-cp") });
+    d.wantCp = coinsCp({ gp: v("d-wcp-gp"), sp: v("d-wcp-sp"), cp: v("d-wcp-cp") });
+    d.note = v("d-note").slice(0, 300);
+  }
+
   /** The GM's trade log, newest first. */
   #logHTML() {
     const log = (game.settings.get(MOD, "log") ?? []).map(cleanLogEntry).filter(Boolean);
     const rows = log.map((e) => {
       const what = listOf(e.items.map((i) => (i.qty > 1 ? `${i.name} ×${i.qty}` : i.name)));
-      const verb = e.kind === "buy" ? `bought ${esc(what)} from` : `sold ${esc(what)} to`;
+      const got = listOf((e.got ?? []).map((i) => (i.qty > 1 ? `${i.name} ×${i.qty}` : i.name)));
+      const verb = e.kind === "buy" ? `bought ${esc(what)} from` : e.kind === "sell" ? `sold ${esc(what)} to`
+        : !got && e.net <= 0 ? `gave ${esc(what || "coins")} to`
+        : `traded ${esc(what || "coins")} for ${esc(got || "coins")}${e.net && what && got ? ` (${e.net > 0 ? "and got" : "and paid"} ${esc(formatCp(Math.abs(e.net)))})` : ""} with`;
       const who = e.user && e.user !== e.actor ? ` <span class="pmk-dim">(${esc(e.user)})</span>` : "";
       return `<div class="pmk-logrow"><span class="pmk-dim">${esc(new Date(e.t).toLocaleString())}</span>
         <span><strong>${esc(e.actor)}</strong>${who} ${verb} <strong>${esc(e.shop)}</strong>${e.market ? ` <span class="pmk-dim">${esc(e.market)}</span>` : ""}</span>
-        <span class="pmk-price ${e.kind === "buy" ? "pmk-in" : "pmk-outc"}">${esc(formatCp(e.cp))}</span>
+        <span class="pmk-price ${e.kind === "buy" ? "pmk-in" : "pmk-outc"}">${e.kind === "trade" && !e.cp ? "even" : esc(formatCp(e.cp))}</span>
         ${e.note ? `<span class="pmk-lognote"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(e.note)}</span>` : ""}</div>`;
     }).join("");
     return `<div class="pmk-logview"><header class="pmk-shead"><a class="pmk-back" data-action="pmkCartBack"><i class="fa-solid fa-arrow-left"></i> Back to the market</a><h2>Trade log</h2></header>
@@ -1352,7 +1662,7 @@ class MarketApp extends Base {
     content.innerHTML = result;
     const main = content.querySelector(".pmk-main");
     if (main) {
-      main.dataset.where = `${this.view.market}|${this.view.shop}|${this.view.cart}|${this.view.log}|${this.view.tab}`;
+      main.dataset.where = `${this.view.market}|${this.view.shop}|${this.view.cart}|${this.view.log}|${this.view.tab}|${this.view.post}|${!!this.view.draft}`;
       if (where === main.dataset.where) main.scrollTop = scroll;
     }
     if (sel) {
@@ -1408,6 +1718,16 @@ class MarketApp extends Base {
         if (q.value === "" || Number(q.value) !== current()) later();
       });
     }
+    this.element.querySelector('select[name="pmk-postas"]')?.addEventListener("change", (ev) => {
+      this.view.postAs = ev.target.value;
+      this.render();
+    });
+    this.element.querySelector('select[name="d-to"]')?.addEventListener("change", () => {
+      this.#readDraft();
+      this.view.draft.want = {};
+      this.#draftSkip = true;
+      this.render();
+    });
     this.element.querySelector('select[name="pmk-buyer"]')?.addEventListener("change", (ev) => {
       const cart = loadCart();
       cart.buyer = ev.target.value;
@@ -1518,6 +1838,7 @@ class MarketApp extends Base {
   static #onMarket(event, target) {
     this.view.cart = false;
     this.view.log = false;
+    this.view.post = false;
     this.view.market = target.dataset.id;
     this.view.shop = null;
     this.view.query = "";
@@ -1537,6 +1858,7 @@ class MarketApp extends Base {
   static #onBack() {
     this.view.cart = false;
     this.view.log = false;
+    this.view.post = false;
     this.view.shop = null;
     this.view.query = "";
     this.render();
@@ -1673,12 +1995,51 @@ class MarketApp extends Base {
   static #onCart() {
     this.view.cart = true;
     this.view.log = false;
+    this.view.post = false;
     this.render();
+  }
+
+  static #onPost() {
+    this.view.post = true;
+    this.view.cart = false;
+    this.view.log = false;
+    this.render();
+  }
+
+  static #onNewOffer() {
+    this.view.draft = { to: null, give: {}, want: {}, giveCp: 0, wantCp: 0, note: "" };
+    this.render();
+  }
+
+  static #onOfferCancel() {
+    this.view.draft = null;
+    this.render();
+  }
+
+  static #onOfferPost() {
+    this.#readDraft();
+    const d = this.view.draft;
+    const me = tradersFor(game.user).find((a) => a.id === this.view.postAs) ?? tradersFor(game.user)[0];
+    if (!me || !d) return;
+    const list = (o) => Object.entries(o).map(([item, qty]) => ({ item, qty }));
+    const offer = { id: "draft000", from: me.id, to: d.to, give: { items: list(d.give), cp: d.giveCp }, want: { items: d.to ? list(d.want) : [], cp: d.wantCp }, note: d.note };
+    if (!cleanOffer(offer)) return void ui.notifications.warn("Marketplace: offer something (items or coins), and ask for something unless you're giving items away.");
+    postRequest({ type: "post", offer });
+  }
+
+  static #onAccept(event, target) {
+    const me = tradersFor(game.user).find((a) => a.id === this.view.postAs) ?? tradersFor(game.user)[0];
+    if (me) postRequest({ type: "accept", id: target.dataset.id, actor: me.id });
+  }
+
+  static async #onWithdraw(event, target) {
+    postRequest({ type: "withdraw", id: target.dataset.id });
   }
 
   static #onCartBack() {
     this.view.cart = false;
     this.view.log = false;
+    this.view.post = false;
     this.render();
   }
 
@@ -1711,6 +2072,7 @@ class MarketApp extends Base {
   static #onLog() {
     if (!this.isGM) return;
     this.view.log = true;
+    this.view.post = false;
     this.view.cart = false;
     this.render();
   }
@@ -2247,6 +2609,7 @@ Hooks.once("init", () => {
     onChange: () => refresh(),
   });
   game.settings.register(MOD, "log", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh() });
+  game.settings.register(MOD, "offers", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh() });
   game.settings.register(MOD, "sheetColor", {
     name: "Pathfinder sheet look: color",
     hint: "The color of the Marketplace's Pathfinder sheet look (chosen in the window's menu).",

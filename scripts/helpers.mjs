@@ -363,10 +363,13 @@ export const LOG_MAX = 300;
 /** A log entry as stored, checked. */
 export function cleanLogEntry(e) {
   if (!e || typeof e !== "object") return null;
-  const kind = e.kind === "sell" ? "sell" : e.kind === "buy" ? "buy" : null;
+  const kind = ["buy", "sell", "trade"].includes(e.kind) ? e.kind : null;
   if (!kind) return null;
-  const items = (Array.isArray(e.items) ? e.items : []).slice(0, MAX_LINES).map((i) => ({ name: str(i?.name, 120), qty: Math.max(1, Math.floor(Number(i?.qty)) || 1) }));
+  const list = (v) => (Array.isArray(v) ? v : []).slice(0, MAX_LINES).map((i) => ({ name: str(i?.name, 120), qty: Math.max(1, Math.floor(Number(i?.qty)) || 1) }));
+  const items = list(e.items);
+  const extra = kind === "trade" ? { got: list(e.got), net: Math.round(Number(e.net) || 0) } : {};
   return {
+    ...extra,
     t: Number.isFinite(Number(e.t)) ? Number(e.t) : 0,
     kind,
     user: str(e.user, 80),
@@ -590,3 +593,79 @@ export function sourceKey(uuid) {
   if (parts[0] !== "Compendium" || parts.length < 4) return null;
   return `${parts[1]}.${parts[2]}.${parts[parts.length - 1]}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* The Trade Post (0.3)                                               */
+/* ------------------------------------------------------------------ */
+
+/** Offers a character can have up at once, and in all. */
+export const MAX_OFFERS_EACH = 10;
+export const MAX_OFFERS = 100;
+const MAX_OFFER_ITEMS = 20;
+
+/** Coins as copper: { gp, sp, cp } (or a number) to a whole number of copper, 0 to a million gold. */
+export function coinsCp(c) {
+  if (typeof c === "number") return Math.max(0, Math.min(100000000, Math.round(c) || 0));
+  const n = (Number(c?.pp) || 0) * 1000 + (Number(c?.gp) || 0) * 100 + (Number(c?.sp) || 0) * 10 + (Number(c?.cp) || 0);
+  return Math.max(0, Math.min(100000000, Math.round(n) || 0));
+}
+
+/** Items in an offer: { item (the owner's item id), qty, name, img }, each item once. */
+function cleanOfferItems(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const l of Array.isArray(raw) ? raw : []) {
+    const item = String(l?.item ?? "");
+    const qty = Math.floor(Number(l?.qty));
+    if (!ID.test(item) || seen.has(item) || !(qty >= 1) || out.length >= MAX_OFFER_ITEMS) continue;
+    seen.add(item);
+    out.push({ item, qty: Math.min(MAX_QTY, qty), name: str(l.name, 120), img: str(l.img, 500) });
+  }
+  return out;
+}
+
+/**
+ * A Trade Post offer: one character (`from`) gives items and coins, and wants coins, and items of the character it's
+ * for (`to`; none for an offer open to anyone, who can only be asked for coins). `note` is the poster's words.
+ */
+export function cleanOffer(o) {
+  if (!o || typeof o !== "object" || !ID.test(String(o.id ?? "")) || !ID.test(String(o.from ?? ""))) return null;
+  const to = ID.test(String(o.to ?? "")) && o.to !== o.from ? String(o.to) : null;
+  const give = { items: cleanOfferItems(o.give?.items), cp: coinsCp(o.give?.cp) };
+  const want = { items: to ? cleanOfferItems(o.want?.items) : [], cp: coinsCp(o.want?.cp) };
+  if (!give.items.length && !give.cp) return null;
+  if (!want.items.length && !want.cp && !give.items.length) return null;
+  return {
+    id: String(o.id),
+    from: String(o.from),
+    user: ID.test(String(o.user ?? "")) ? String(o.user) : null,
+    to,
+    give,
+    want,
+    note: str(o.note, 300),
+    created: Number.isFinite(Number(o.created)) ? Number(o.created) : 0,
+  };
+}
+
+/** All offers, newest first, each id once, capped per character and in all. */
+export function cleanOffers(raw) {
+  const out = [];
+  const seen = new Set();
+  const each = new Map();
+  const list = (Array.isArray(raw) ? raw : []).map(cleanOffer).filter(Boolean).sort((a, b) => b.created - a.created);
+  for (const o of list) {
+    if (seen.has(o.id) || out.length >= MAX_OFFERS) continue;
+    const n = each.get(o.from) ?? 0;
+    if (n >= MAX_OFFERS_EACH) continue;
+    seen.add(o.id);
+    each.set(o.from, n + 1);
+    out.push(o);
+  }
+  return out;
+}
+
+/** Can a character take this offer: not their own, and the offer is open or for them. */
+export const canAccept = (offer, actorId) => !!offer && !!actorId && offer.from !== actorId && (!offer.to || offer.to === actorId);
+
+/** What changes hands, in copper, when an offer is taken: positive, the taker pays the poster; negative, the reverse. */
+export const offerNet = (offer) => coinsCp(offer?.want?.cp) - coinsCp(offer?.give?.cp);

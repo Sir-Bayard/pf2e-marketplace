@@ -195,6 +195,21 @@ export function sellRows(actor) {
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
 
+/** What a character can trade to another at the Trade Post, as plain rows: like `sellRows`, but an unidentified item can
+ * change hands as it is (shown by its unidentified name). */
+export function tradeRows(actor) {
+  const out = [];
+  for (const item of actor?.items ?? []) {
+    if (!isPhysical(item) || isCoins(item)) continue;
+    let why = null;
+    if (granted(item)) why = "Not yours to trade (temporary, or granted by a feature).";
+    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
+    const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
+    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, qty: quantityOf(item), why });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
+}
+
 /** Can this item be sold to a shop now? Something worth nothing sells for nothing (a design decision: a way to get rid
  * of things while shopping). */
 export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item)
