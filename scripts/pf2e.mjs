@@ -16,13 +16,15 @@ const isPhysical = (item) => (typeof item?.isOfType === "function" ? item.isOfTy
 /** Coins are treasure items with category "coin" (`isCoinage`); they're the shop's money, not its stock. */
 const isCoins = (item) => !!item?.isCoinage || (item?.type === "treasure" && item.system?.category === "coin");
 
-/** What players know of an item: an unidentified one shows its unidentified name, picture and description
- * (`system.identification.unidentified`). GMs see the real item. */
-export function knownAs(item, isGM) {
-  const real = { name: item?.name ?? "", img: item?.img ?? "", description: String(item?.system?.description?.value ?? "") };
-  if (isGM || item?.isIdentified !== false) return real;
-  const u = item.system?.identification?.unidentified ?? {};
-  return { name: u.name || "Unidentified item", img: u.img || real.img, description: String(u.data?.description?.value ?? "") };
+/** An item as a shop sells it: always the real, identified item (shops sell identified goods, Patrick 9 Nov), read
+ * from its source data so PF2e's mystified name and picture for an unidentified item don't show through. */
+export function realItem(item) {
+  const src = item?._source ?? {};
+  return {
+    name: src.name ?? item?.name ?? "",
+    img: src.img ?? item?.img ?? "",
+    description: String(src.system?.description?.value ?? item?.system?.description?.value ?? ""),
+  };
 }
 
 /** An item's price in copper for one batch, and the batch size (`price.value.copperValue`, `price.per`). */
@@ -38,28 +40,28 @@ const coinsToCp = (c) => (c && typeof c === "object" ? (Number(c.pp) || 0) * 100
  * A shop's stock as plain rows: every physical item but coins. Items inside containers are listed too; a container
  * that holds something can't be sold as it is (PF2e won't sell one).
  */
-export function stockRows(actor, isGM) {
+export function stockRows(actor) {
   const out = [];
   for (const item of actor?.items ?? []) {
     if (!isPhysical(item) || isCoins(item)) continue;
     const { cp, per } = priceOf(item);
-    // Players learn nothing of an unidentified item's level or traits from the shop list.
-    const hide = !isGM && item.isIdentified === false;
+    const real = realItem(item);
     const holds = item.type === "backpack" ? (item.contents?.size ?? 0) : 0;
     out.push({
       id: item.id,
-      name: knownAs(item, isGM).name,
-      img: knownAs(item, isGM).img,
+      name: real.name,
+      img: real.img,
       type: item.type,
       usage: String(item.system?.usage?.value ?? ""),
-      level: hide ? 0 : Number(item.level ?? item.system?.level?.value ?? 0) || 0,
-      rarity: hide ? "common" : item.rarity ?? item.system?.traits?.rarity ?? "common",
-      traits: hide ? [] : [...(item.traits ?? item.system?.traits?.value ?? [])].map(String),
+      level: Number(item.level ?? item.system?.level?.value ?? 0) || 0,
+      rarity: item.rarity ?? item.system?.traits?.rarity ?? "common",
+      traits: [...(item.traits ?? item.system?.traits?.value ?? [])].map(String),
       qty: Math.max(0, Number(item.quantity ?? item.system?.quantity ?? 0) || 0),
       cp,
       per,
       holds,
       inside: !!item.system?.containerId,
+      // Shown and sold identified; the GM sees a note that the sheet has it unidentified.
       identified: item.isIdentified !== false,
     });
   }
@@ -67,7 +69,7 @@ export function stockRows(actor, isGM) {
 }
 
 /** An item's description for showing: the players' text only (PF2e keeps GM notes in a separate field). */
-export const descriptionOf = (item, isGM) => knownAs(item, isGM).description;
+export const descriptionOf = (item) => realItem(item).description;
 
 /** A new, empty PF2e merchant. */
 export function merchantData(name, folder, img) {

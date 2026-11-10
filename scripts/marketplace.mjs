@@ -347,7 +347,7 @@ class MarketApp extends Base {
     const folder = market.folder ? game.folders.get(market.folder) : null;
     const cards = shops.map((s) => {
       const actor = game.actors.get(s.id);
-      const rows = stockRows(actor, this.isGM);
+      const rows = stockRows(actor);
       const count = rows.length;
       const marks = this.isGM ? [
         s.hidden ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : "",
@@ -380,7 +380,7 @@ class MarketApp extends Base {
 
   async #shopHTML(market, actor) {
     if (!actor) return this.#marketHTML(market, shopsFor(market));
-    const rows = stockRows(actor, this.isGM);
+    const rows = stockRows(actor);
     const groups = groupStock(rows, this.view.query);
     const hidden = !!actor.flags?.[MOD]?.hidden;
     const gmBar = this.isGM ? `<div class="pmk-gmbar">
@@ -394,9 +394,9 @@ class MarketApp extends Base {
       for (const r of items) {
         const open = this.view.open.has(r.id);
         const rar = RARITY[r.rarity] ? `<span class="pmk-rar pmk-${esc(r.rarity)}">${RARITY[r.rarity]}</span>` : "";
-        const lvl = r.identified || this.isGM ? `<span class="pmk-lvl">${r.level}</span>` : `<span class="pmk-lvl">?</span>`;
+        const lvl = `<span class="pmk-lvl">${r.level}</span>`;
         const note = r.holds ? `<span class="pmk-note">holds ${r.holds} ${r.holds === 1 ? "item" : "items"}; not for sale as it is</span>`
-          : !r.identified ? `<span class="pmk-note">unidentified</span>` : "";
+          : !r.identified && this.isGM ? `<span class="pmk-note">unidentified on the sheet; players see it, and buy it, identified</span>` : "";
         const price = `${esc(formatCp(r.cp))}${r.per > 1 ? ` <span class="pmk-per">for ${r.per}</span>` : ""}`;
         list.push(`<div class="pmk-row ${open ? "open" : ""} ${r.qty ? "" : "pmk-out"}" data-action="pmkItem" data-id="${esc(r.id)}">
           <img src="${esc(r.img)}" alt="">
@@ -431,9 +431,9 @@ class MarketApp extends Base {
   async #description(actor, itemId) {
     const item = actor.items.get(itemId);
     if (!item) return "";
-    const key = `${item.uuid}|${item._stats?.modifiedTime ?? 0}|${this.isGM}`;
+    const key = `${item.uuid}|${item._stats?.modifiedTime ?? 0}`;
     if (!this.descs.has(key)) {
-      const html = await TextEditor().enrichHTML(descriptionOf(item, this.isGM), { secrets: this.isGM, rollData: item.getRollData?.(), relativeTo: item });
+      const html = await TextEditor().enrichHTML(descriptionOf(item), { secrets: this.isGM, rollData: item.getRollData?.(), relativeTo: item });
       this.descs.set(key, html);
     }
     return this.descs.get(key);
