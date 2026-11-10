@@ -151,3 +151,58 @@ export function buyersFor(user, actors) {
     return a.testUserPermission(user, "OWNER");
   });
 }
+
+/* ------------------------------------------------------------------ */
+/* Selling to a shop                                                  */
+/* ------------------------------------------------------------------ */
+
+/** Treasure (gems, art objects and the like) that isn't coins: shops pay their treasure rate for it. */
+export const isTreasure = (item) => item?.type === "treasure" && !isCoins(item);
+
+/**
+ * What a character can offer a shop, as plain rows: every physical item but coins. `why` says why one can't be sold
+ * (unidentified items must be identified first, Patrick 9 Nov; a container must be emptied first).
+ */
+export function sellRows(actor) {
+  const out = [];
+  for (const item of actor?.items ?? []) {
+    if (!isPhysical(item) || isCoins(item)) continue;
+    const { cp, per } = priceOf(item);
+    let why = null;
+    if (item.isIdentified === false) why = "Identify it first.";
+    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
+    else if (!cp) why = "Worth nothing to a shop.";
+    const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
+    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), why });
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
+}
+
+/** Can this item be sold to a shop now? */
+export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false
+  && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0) && priceOf(item).cp > 0;
+
+/** The data for an item a shop bought: the quantity sold, out of any container, unequipped, marked as sold to the shop
+ * (flag `stock.kind`, for 0.2's rotation). */
+export function soldCopy(item, qty, mod) {
+  const data = item.toObject();
+  delete data._id;
+  data.system ??= {};
+  data.system.quantity = qty;
+  data.system.containerId = null;
+  data.system.equipped = { carryType: "worn" };
+  data.flags ??= {};
+  data.flags[mod] = { ...(data.flags[mod] ?? {}), stock: { kind: "sold", left: 2 } };
+  return data;
+}
+
+/** Set a loot actor's level (`system.details.level.value`). */
+export const setLevel = (actor, level) => actor.update({ "system.details.level.value": Math.round(Number(level) || 0) });
+
+/** A shopkeeper as players know them: the name and picture on their token. */
+export function keeperFace(actor, isGM) {
+  if (!actor) return null;
+  const known = actor.flags?.["pf2e-npc-attitudes"]?.npc?.knownAs;
+  const name = isGM ? actor.name : (known || actor.prototypeToken?.name?.trim() || actor.name);
+  return { name, img: actor.prototypeToken?.texture?.src || actor.img };
+}

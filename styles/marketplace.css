@@ -118,6 +118,34 @@
 .pmk .pmk-checkout { display: flex; justify-content: flex-end; margin-top: 8px; }
 .pmk .pmk-checkout button { width: auto; padding: 0 16px; height: 34px; gap: 6px; }
 
+/* Shop: shopkeeper, purse, tabs */
+.pmk .pmk-stitle { flex-wrap: wrap; }
+.pmk .pmk-keeper { display: flex; align-items: center; gap: 8px; margin-left: auto; padding: 4px 10px 4px 4px; border: 1px solid var(--pmk-line); border-radius: 30px; }
+.pmk .pmk-keeper img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; object-position: top; border: none; }
+.pmk .pmk-keeper div { display: flex; flex-direction: column; line-height: 1.2; }
+.pmk .pmk-purse { font-size: 12px; color: var(--pmk-dim); padding: 0 6px; white-space: nowrap; }
+.pmk .pmk-purse i { color: var(--pmk-gold); margin-right: 3px; }
+.pmk .pmk-warnbox { background: rgba(176, 74, 60, 0.18); color: #f0c2b8; }
+.pmk .pmk-tabs { display: flex; gap: 4px; margin: 10px 0 4px; border-bottom: 1px solid var(--pmk-line); }
+.pmk .pmk-tabs a { padding: 6px 14px; border-radius: 4px 4px 0 0; color: var(--pmk-dim); cursor: pointer; }
+.pmk .pmk-tabs a:hover { color: inherit; text-shadow: none; background: rgba(255, 255, 255, 0.04); }
+.pmk .pmk-tabs a.active { color: inherit; background: rgba(201, 164, 92, 0.14); box-shadow: inset 0 -2px 0 var(--pmk-gold); }
+
+/* Selling */
+.pmk .pmk-srowhead, .pmk .pmk-srow { display: grid; grid-template-columns: 30px minmax(0, 1fr) 54px 70px 100px; align-items: center; column-gap: 10px; }
+.pmk .pmk-srowhead { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pmk-dim); padding: 4px 6px; border-bottom: 1px solid var(--pmk-line); }
+.pmk .pmk-srowhead span:nth-child(n + 3) { text-align: right; }
+.pmk .pmk-srow { padding: 3px 6px; border-radius: 4px; }
+.pmk .pmk-srow:hover { background: rgba(255, 255, 255, 0.04); }
+.pmk .pmk-srow img { width: 30px; height: 30px; border-radius: 3px; border: none; object-fit: cover; }
+.pmk .pmk-srow.pmk-no { opacity: 0.55; }
+.pmk .pmk-srow .pmk-qtyin { justify-self: end; }
+
+/* Trade log */
+.pmk .pmk-logrow { display: grid; grid-template-columns: 150px minmax(0, 1fr) 100px; gap: 10px; align-items: baseline; padding: 5px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 13px; }
+.pmk .pmk-in { color: #cfe6c8; }
+.pmk .pmk-outc { color: #e8c890; }
+
 /* Dialogs */
 .pmk-dialog .pmk-form { display: flex; flex-direction: column; gap: 8px; }
 .pmk-dialog .pmk-form > label, .pmk-dialog .pmk-field { display: flex; flex-direction: column; gap: 3px; }
@@ -126,6 +154,8 @@
 .pmk-dialog .pmk-pick button { flex: 0 0 32px; }
 .pmk-dialog .pmk-hint { font-size: 11px; opacity: 0.75; margin: 0; }
 .pmk-dialog prose-mirror { min-height: 140px; }
+.pmk-dialog .pmk-form > label.pmk-check { display: flex; flex-direction: row; align-items: center; gap: 6px; }
+.pmk-dialog .pmk-form > label.pmk-check input { flex: 0 0 auto; margin: 0; }
 
 /* The button in the Actors tab */
 .pmk-open { flex: 1 1 100%; }

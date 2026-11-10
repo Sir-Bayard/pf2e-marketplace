@@ -172,3 +172,106 @@ export function listOf(names) {
   if (names.length <= 1) return names.join("");
   return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
+
+/* ------------------------------------------------------------------ */
+/* Shops: settings, purse, attitude prices, selling                   */
+/* ------------------------------------------------------------------ */
+
+/** A party's expected treasure over one level, in gp (GM Core's party treasure by level, total value), 1 to 20. */
+export const TREASURE_BY_LEVEL = [175, 300, 500, 850, 1350, 2000, 2900, 4000, 5700, 8000, 11500, 16500, 25000, 36500, 54500, 82500, 128000, 208000, 355000, 490000];
+
+/** A shop's full purse in copper: one level's party treasure for its level (100 gp below level 1), scaled by the
+ * world's purse setting (a percentage). */
+export function purseFor(level, scalePct = 100) {
+  const lvl = Math.round(Number(level) || 0);
+  const gp = lvl < 1 ? 100 : TREASURE_BY_LEVEL[Math.min(lvl, 20) - 1];
+  const scale = Math.max(0, Number(scalePct) || 0);
+  return Math.round(gp * 100 * scale / 100);
+}
+
+export const ATTITUDES = ["hostile", "unfriendly", "indifferent", "friendly", "helpful"];
+export const ATTITUDE_LABEL = { hostile: "Hostile", unfriendly: "Unfriendly", indifferent: "Indifferent", friendly: "Friendly", helpful: "Helpful" };
+export const PRICE_DEFAULTS = { hostile: 50, unfriendly: 20, indifferent: 0, friendly: -10, helpful: -20 };
+
+/** A shop's settings (actor flag `shop`), every field checked. */
+export function cleanShop(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const pct = (v, d) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.max(0, Math.min(1000, n)) : d;
+  };
+  return {
+    buys: r.buys !== false,
+    itemRate: pct(r.itemRate, 50),
+    treasureRate: pct(r.treasureRate, 100),
+    unlimited: !!r.unlimited,
+    attitude: ATTITUDES.includes(r.attitude) ? r.attitude : "indifferent",
+    keeper: ID.test(String(r.keeper ?? "")) ? String(r.keeper) : null,
+  };
+}
+
+/** The price change for an attitude, in percent (positive costs more), or null when the shop won't trade at all. */
+export function attitudePct(attitude, pcts, hostileRefuses = true) {
+  const a = ATTITUDES.includes(attitude) ? attitude : "indifferent";
+  if (a === "hostile" && hostileRefuses) return null;
+  const n = Number(pcts?.[a]);
+  return Number.isFinite(n) ? Math.max(-100, Math.min(1000, n)) : PRICE_DEFAULTS[a];
+}
+
+/** A price changed by a percentage, rounded up to the copper (never below nothing). */
+export const adjust = (cp, pct) => Math.max(0, Math.ceil((Math.max(0, Number(cp) || 0) * (100 + (Number(pct) || 0))) / 100));
+
+/** What a shop pays for `qty` of an item worth `cp` copper per batch of `per`, at `ratePct` percent: rounded down to
+ * the copper, since the shop is the one paying. */
+export const offerFor = (cp, per, qty, ratePct) => Math.floor((Math.max(0, Number(cp) || 0) * Math.max(0, Number(qty) || 0) * Math.max(0, Number(ratePct) || 0)) / (Math.max(1, Number(per) || 1) * 100));
+
+/** Lines of a sale: { item, qty } with real ids and whole quantities, each item once. */
+export function cleanSellLines(raw) {
+  const out = [];
+  const seen = new Map();
+  for (const l of Array.isArray(raw) ? raw : []) {
+    const item = String(l?.item ?? "");
+    const qty = Math.floor(Number(l?.qty));
+    if (!ID.test(item) || !(qty >= 1)) continue;
+    if (seen.has(item)) {
+      seen.get(item).qty = Math.min(MAX_QTY, seen.get(item).qty + qty);
+      continue;
+    }
+    if (out.length >= MAX_LINES) break;
+    const line = { item, qty: Math.min(MAX_QTY, qty) };
+    seen.set(item, line);
+    out.push(line);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* The trade log                                                      */
+/* ------------------------------------------------------------------ */
+
+export const LOG_MAX = 300;
+
+/** A log entry as stored, checked. */
+export function cleanLogEntry(e) {
+  if (!e || typeof e !== "object") return null;
+  const kind = e.kind === "sell" ? "sell" : e.kind === "buy" ? "buy" : null;
+  if (!kind) return null;
+  const items = (Array.isArray(e.items) ? e.items : []).slice(0, MAX_LINES).map((i) => ({ name: str(i?.name, 120), qty: Math.max(1, Math.floor(Number(i?.qty)) || 1) }));
+  return {
+    t: Number.isFinite(Number(e.t)) ? Number(e.t) : 0,
+    kind,
+    user: str(e.user, 80),
+    actor: str(e.actor, 120),
+    shop: str(e.shop, 120),
+    market: str(e.market, 120),
+    items,
+    cp: Math.max(0, Math.round(Number(e.cp) || 0)),
+  };
+}
+
+/** The log with a new entry first, at most LOG_MAX entries. */
+export function addLogEntry(log, entry) {
+  const e = cleanLogEntry(entry);
+  const list = (Array.isArray(log) ? log : []).map(cleanLogEntry).filter(Boolean);
+  return e ? [e, ...list].slice(0, LOG_MAX) : list.slice(0, LOG_MAX);
+}
