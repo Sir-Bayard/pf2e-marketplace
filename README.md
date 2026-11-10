@@ -6,23 +6,23 @@ A marketplace window for Pathfinder 2e on Foundry VTT 14. The GM sets up markets
 
 ![A market](docs/images/market.png)
 
-**A market.** Its picture and description, and its shops. Players see the markets the GM has made visible, and can trade where the GM has opened them.
+**A market**, in the Pathfinder sheet look. Its picture and description, and its shops. Players see the markets the GM has made visible, and can trade where the GM has opened them.
 
 ![A shop](docs/images/shop.png)
 
-**A shop.** Stock by group with level, rarity, stock and price, and descriptions on a click. This shopkeeper is friendly toward Vance, so his prices are 10% off.
+**A shop.** The tally of the cart at the top, the purse in the header, stock by group with level, rarity, stock and price, and descriptions on a click. This shopkeeper is friendly toward Vance, so his prices are 10% off.
 
 ![The cart](docs/images/cart.png)
 
-**The cart.** What the character buys and sells, by shop, and what they pay or get. The GM's client makes the trade.
+**The cart**, in the Dark look. What the character buys and sells, by shop, and what they pay or get. The GM's client makes the trade.
 
 ![Selling](docs/images/sell.png)
 
-**Selling.** What the character carries and the shop's offer for each. Offers go into the same cart as purchases.
+**Selling**, in the Dark and parchment look. What the character carries and the shop's offer for each. Offers go into the same cart as purchases.
 
 ![The GM's view of a shop](docs/images/gm-shop.png)
 
-**The GM's view of a shop.** Shown or Hidden, Open or Closed, the purse, Fill purse, the shop's settings and its shopkeeper.
+**The GM's view of a shop.** Shown or Hidden, Open or Closed, Fill purse, Restock, Draw, the shop's settings, its shopkeeper, and each item's place in the stock (staple or rotating).
 
 ## Install
 
@@ -111,7 +111,7 @@ Open the **Marketplace**, pick a market and a shop. Click an item for its descri
 
 **Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off.
 
-**Selling.** A shop's **Sell** tab lists what your character carries, with the shop's offer for each. Click the offer button on a line to offer one more (or one batch), right-click for one fewer, or type how many. Unidentified items have to be identified first, and containers emptied.
+**Selling.** A shop's **Sell** tab lists what your character carries, with the shop's offer for each. Click the offer button on a line to offer one more (or one batch), right-click for one fewer, or type how many. Unidentified items have to be identified first, and containers emptied. Something worth nothing sells for nothing, a way to get rid of it.
 
 **The cart and checkout.** Purchases and sales go into one cart, from any open shop. The bar at the top of a shop page keeps a running tally (what you're buying, what you're selling, and what you pay or get) with a **Checkout** button that opens the cart. The cart lists everything by shop, with minus and plus buttons for each quantity, and one button makes the whole trade. Sales are settled with purchases: at each shop only the difference changes hands, so selling your old armor can pay for the new, and a shop with an empty purse can still take a trade-in against what you buy from it. The GM's client checks the stock, the prices, your goods and your money, moves the coins (making change from bigger coins as the system does) and the items; what you buy arrives identified and stacked with what you have. If anything changed since you looked, nothing happens and you're told why. If the cart changed after the total you saw (a quantity typed a moment before), the button asks you to look again first.
 

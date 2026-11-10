@@ -10,6 +10,7 @@ Stock tools.
 - A browse-only shop shows players its staples, plus the rest if they saw it open since its last restock.
 - Anything put in a shop unidentified is identified there.
 - Right-click an item in a shop for its full sheet (read-only for players), or one of your own on the Sell tab.
+- Things worth nothing can be sold, for nothing: a way to get rid of them while shopping.
 
 ## 0.1.0
 

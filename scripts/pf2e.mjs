@@ -189,16 +189,16 @@ export function sellRows(actor) {
     if (item.isIdentified === false) why = "Identify it first.";
     else if (granted(item)) why = "Not yours to sell (temporary, or granted by a feature).";
     else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
-    else if (!cp) why = "Worth nothing to a shop.";
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
     out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), why });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
 
-/** Can this item be sold to a shop now? */
+/** Can this item be sold to a shop now? Something worth nothing sells for nothing (a design decision: a way to get rid
+ * of things while shopping). */
 export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item)
-  && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0) && priceOf(item).cp > 0;
+  && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0);
 /** A temporary item (`system.temporary`), or one granted by a feat, feature or effect (`flags.pf2e.grantedBy`). */
 function granted(item) {
   return !!item?.system?.temporary || !!item?.flags?.pf2e?.grantedBy;

@@ -1195,7 +1195,7 @@ class MarketApp extends Base {
       const elsewhere = line && line.shop !== shop.id ? game.actors.get(line.shop) : null;
       if (!r.why) total += offer(r, here);
       const each = offer(r, r.per);
-      const note = r.why ? esc(r.why) : `${each ? esc(formatCp(each)) : "under 1 cp"}${r.per > 1 ? ` for ${r.per}` : " each"}${elsewhere ? `; offered to ${esc(elsewhere.name)}` : ""}`;
+      const note = r.why ? esc(r.why) : `${!r.cp ? "worth nothing" : `${each ? esc(formatCp(each)) : "under 1 cp"}${r.per > 1 ? ` for ${r.per}` : " each"}`}${elsewhere ? `; offered to ${esc(elsewhere.name)}` : ""}`;
       return `<div class="pmk-srow ${r.why ? "pmk-no" : ""}" data-id="${esc(r.id)}">
         <img src="${esc(r.img)}" alt="">
         <span class="pmk-rn">${esc(r.name)}<span class="pmk-note">${note}</span></span>
