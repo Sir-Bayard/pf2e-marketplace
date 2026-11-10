@@ -80,10 +80,11 @@ export function shopsOf(market, actors, parentOf, isGM) {
 /* Money                                                              */
 /* ------------------------------------------------------------------ */
 
-/** Copper as coins for showing: "12 gp 5 sp", "3 cp", "free". Platinum is shown as gold, as PF2e's prices are. */
-export function formatCp(cp) {
+/** Copper as coins for showing: "12 gp 5 sp", "3 cp", or `zero` ("free" for a price; "no money" for a purse).
+ * Platinum is shown as gold, as PF2e's prices are. */
+export function formatCp(cp, zero = "free") {
   const n = Math.max(0, Math.round(Number(cp) || 0));
-  if (!n) return "free";
+  if (!n) return zero;
   const gp = Math.floor(n / 100), sp = Math.floor((n % 100) / 10), c = n % 10;
   return [gp && `${gp.toLocaleString("en-US")} gp`, sp && `${sp} sp`, c && `${c} cp`].filter(Boolean).join(" ");
 }
@@ -125,4 +126,49 @@ export function groupStock(rows, query = "") {
     if (list.length) out.push([key, label, list]);
   }
   return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* The cart                                                           */
+/* ------------------------------------------------------------------ */
+
+export const MAX_LINES = 50;
+export const MAX_QTY = 9999;
+
+/** Cart lines as stored or sent: each { shop, item, qty } with real ids and a whole quantity, the same item once. */
+export function cleanLines(raw) {
+  const out = [];
+  const seen = new Map();
+  for (const l of Array.isArray(raw) ? raw : []) {
+    const shop = String(l?.shop ?? ""), item = String(l?.item ?? "");
+    const qty = Math.floor(Number(l?.qty));
+    if (!ID.test(shop) || !ID.test(item) || !(qty >= 1)) continue;
+    const key = `${shop}.${item}`;
+    if (seen.has(key)) {
+      const line = seen.get(key);
+      line.qty = Math.min(MAX_QTY, line.qty + qty);
+      continue;
+    }
+    if (out.length >= MAX_LINES) break;
+    const line = { shop, item, qty: Math.min(MAX_QTY, qty) };
+    seen.set(key, line);
+    out.push(line);
+  }
+  return out;
+}
+
+/** Add to a cart: a new line, or more of one already there, never past what's in stock. */
+export function addToCart(lines, shop, item, qty, stock) {
+  const out = cleanLines(lines);
+  const line = out.find((l) => l.shop === shop && l.item === item);
+  const want = Math.min(Math.max(0, stock), (line?.qty ?? 0) + qty);
+  if (line) line.qty = want;
+  else if (want >= 1 && out.length < MAX_LINES) out.push({ shop, item, qty: want });
+  return out.filter((l) => l.qty >= 1);
+}
+
+/** "Longsword, 10 Arrows and Chain Mail": a list of bought things for a notice. */
+export function listOf(names) {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }

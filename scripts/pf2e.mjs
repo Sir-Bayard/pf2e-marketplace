@@ -75,3 +75,79 @@ export const descriptionOf = (item) => realItem(item).description;
 export function merchantData(name, folder, img) {
   return { name, type: "loot", folder: folder ?? null, img: img || undefined, system: { lootSheetType: "Merchant" } };
 }
+
+/* ------------------------------------------------------------------ */
+/* Trading                                                            */
+/* ------------------------------------------------------------------ */
+
+/** Can a shop sell this item as it is? Physical, not coins, and not a container with things in it. */
+export function sellable(item) {
+  if (!item || !isPhysical(item) || isCoins(item)) return false;
+  return !(item.type === "backpack" && (item.contents?.size ?? 0) > 0);
+}
+
+/** An item's quantity (`system.quantity`). */
+export const quantityOf = (item) => Math.max(0, Number(item?.quantity ?? item?.system?.quantity ?? 0) || 0);
+
+/** All the money an actor has, in copper (`inventory.currency.copperValue`). */
+export function fundsCp(actor) {
+  const inv = actor?.inventory;
+  const v = inv?.currency?.copperValue ?? inv?.coins?.copperValue;
+  return Math.max(0, Math.round(Number(v) || 0));
+}
+
+/** Copper as PF2e coins, gold first, for paying in (so a shop isn't handed a pile of copper). */
+export const asCoins = (cp) => {
+  const n = Math.max(0, Math.round(Number(cp) || 0));
+  return { pp: 0, gp: Math.floor(n / 100), sp: Math.floor((n % 100) / 10), cp: n % 10 };
+};
+
+/** Take money from an actor, making change from bigger coins as PF2e does (`inventory.removeCoins`, by value).
+ * False when it hasn't enough. */
+export async function pay(actor, cp) {
+  if (cp <= 0) return true;
+  return !!(await actor.inventory.removeCoins(asCoins(cp)));
+}
+
+/** Give an actor money (`inventory.addCoins`). */
+export async function receive(actor, cp) {
+  if (cp > 0) await actor.inventory.addCoins(asCoins(cp));
+}
+
+/** The data for a bought copy of an item: the quantity bought, identified (shops sell identified goods), not equipped,
+ * out of any container. Equip state as PF2e gives a newly moved item: carried as worn, out of its slot if worn. */
+export function boughtCopy(item, qty) {
+  const data = item.toObject();
+  delete data._id;
+  data.system ??= {};
+  data.system.quantity = qty;
+  data.system.containerId = null;
+  if (data.system.identification) data.system.identification.status = "identified";
+  const worn = item.system?.usage?.type === "worn" && item.system?.usage?.where;
+  data.system.equipped = worn ? { carryType: "worn", inSlot: false } : { carryType: "worn" };
+  return data;
+}
+
+/** Put items in an actor's inventory, stacked with what it already has where PF2e can (`inventory.add`). */
+export async function giveItems(actor, datas) {
+  if (!datas.length) return;
+  if (typeof actor.inventory?.add === "function") await actor.inventory.add(datas, { stack: true });
+  else await actor.createEmbeddedDocuments("Item", datas);
+}
+
+/** Take a quantity out of a shop's stock: the item goes when none are left, as PF2e's own sale does. */
+export async function takeFromStock(item, qty) {
+  const left = quantityOf(item) - qty;
+  if (left < 1) await item.delete();
+  else await item.update({ "system.quantity": left });
+}
+
+/** Actors a user can buy for: characters they own, and the party (its stash) if they own it. A GM can buy for any
+ * character a player owns, and the party. */
+export function buyersFor(user, actors) {
+  return actors.filter((a) => {
+    if (a.type !== "character" && a.type !== "party") return false;
+    if (user.isGM) return a.type === "party" || a.hasPlayerOwner;
+    return a.testUserPermission(user, "OWNER");
+  });
+}
