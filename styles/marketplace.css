@@ -146,6 +146,7 @@
 /* Trade log */
 .pmk .pmk-logrow { display: grid; grid-template-columns: 150px minmax(0, 1fr) 100px; gap: 10px; align-items: baseline; padding: 5px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 13px; }
 .pmk .pmk-in { color: #cfe6c8; }
+.pmk .pmk-lognote { grid-column: 2 / -1; font-size: 12px; color: #e8a090; }
 .pmk .pmk-outc { color: #e8c890; }
 
 /* Dialogs */

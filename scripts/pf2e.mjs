@@ -224,3 +224,29 @@ export function keeperFace(actor, isGM) {
   const art = actor.img && !SHIPPED_ART.test(actor.img) ? actor.img : null;
   return { name, img: rec.portrait || art || actor.prototypeToken?.texture?.src || actor.img };
 }
+
+/**
+ * Was this item's price set by hand? Compares the price stored on the item (PF2e adds runes and materials on top of
+ * it, so upgraded gear doesn't count) with the price on its compendium entry (`_stats.compendiumSource`, or the older
+ * `flags.core.sourceId`). Null when they agree; otherwise `{ cp, per, source }` (source null when the item has no
+ * entry, as homebrew does). The sale still goes through; the GM's notice and the trade log say so.
+ */
+export async function handPriced(item) {
+  const own = item?._source?.system?.price ?? {};
+  const cp = coinsToCp(own.value), per = Math.max(1, Number(own.per) || 1);
+  const uuid = item?._stats?.compendiumSource ?? item?.flags?.core?.sourceId ?? null;
+  let src = null;
+  if (uuid) {
+    try {
+      src = await fromUuid(uuid);
+    } catch {
+      src = null;
+    }
+  }
+  if (!src) return { cp, per, source: null };
+  const sp = src._source?.system?.price ?? src.system?.price ?? {};
+  const scp = coinsToCp(sp.value), sper = Math.max(1, Number(sp.per) || 1);
+  // The same price per unit, whatever the batch size.
+  if (scp * per === cp * sper) return null;
+  return { cp, per, source: { cp: scp, per: sper } };
+}

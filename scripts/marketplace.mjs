@@ -7,11 +7,11 @@
 
 import {
   esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTrade, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, listOf,
-  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, adjust, offerFor, sellRate, cleanSellLines, addLogEntry, cleanLogEntry,
+  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, adjust, offerFor, sellRate, cleanSellLines, addLogEntry, cleanLogEntry, handPricedNote,
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
-  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure,
+  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced,
 } from "./pf2e.mjs";
 
 const MOD = "pf2e-marketplace";
@@ -529,6 +529,13 @@ async function processSell(msg, sender) {
   }
   if (Number(msg.total) !== total) throw new Refused("the offer changed since you looked. Check it and try again.");
   if (!conf.unlimited && fundsCp(shop) < total) throw new Refused(`${shop.name} ${canPay(shop)}.`);
+  // A price set by hand on the seller's item (or homebrew with no compendium entry) is flagged for the GM, not refused.
+  const notes = [];
+  for (const p of plan) {
+    const h = await handPriced(p.item);
+    if (h) notes.push(handPricedNote(p.name, h));
+  }
+  const note = notes.join("; ");
   // The items leave the seller first (checked again against what they have now), then the shop pays, then takes them,
   // then the seller is paid; a step that fails undoes the ones before it.
   const copies = plan.map((p) => soldCopy(p.item, p.qty, MOD));
@@ -545,8 +552,8 @@ async function processSell(msg, sender) {
     throw err;
   }
   await receive(seller, total);
-  logTrade({ kind: "sell", user: sender.name, actor: seller.name, shop: shop.name, market: market.name, items: plan.map((p) => ({ name: p.name, qty: p.qty })), cp: total });
-  return { seller: seller.name, shop: shop.name, total, names: plan.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name)) };
+  logTrade({ kind: "sell", user: sender.name, actor: seller.name, shop: shop.name, market: market.name, items: plan.map((p) => ({ name: p.name, qty: p.qty })), cp: total, note });
+  return { seller: seller.name, shop: shop.name, total, names: plan.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name)), note };
 }
 const soldText = (r) => `${r.seller} sold ${listOf(r.names)} to ${r.shop} for ${formatCp(r.total)}.`;
 
@@ -573,7 +580,8 @@ async function onRequest(msg, sender) {
     } else if (msg.type === "sell") {
       const r = await queued(() => processSell(msg, sender));
       reply({ type: "done", what: "sell", text: soldText(r) });
-      ui.notifications.info(esc(`Marketplace: ${sender.name}: ${soldText(r)}`));
+      if (r.note) ui.notifications.warn(esc(`Marketplace: ${sender.name}: ${soldText(r)} Check the price: ${r.note}.`), { permanent: true });
+      else ui.notifications.info(esc(`Marketplace: ${sender.name}: ${soldText(r)}`));
     }
   } catch (err) {
     if (err instanceof Refused) return reply({ type: "fail", text: `Marketplace: ${err.message}` });
@@ -676,7 +684,7 @@ async function sellNow(app, shop, seller) {
     try {
       const r = await queued(() => processSell(msg, game.user));
       app.view.sell = new Map();
-      ui.notifications.info(esc(`Marketplace: ${soldText(r)}`));
+      ui.notifications.info(esc(`Marketplace: ${soldText(r)}${r.note ? ` Check the price: ${r.note}.` : ""}`));
     } catch (err) {
       if (err instanceof Refused) ui.notifications.warn(esc(`Marketplace: ${err.message}`));
       else {
@@ -1022,7 +1030,8 @@ class MarketApp extends Base {
       const who = e.user && e.user !== e.actor ? ` <span class="pmk-dim">(${esc(e.user)})</span>` : "";
       return `<div class="pmk-logrow"><span class="pmk-dim">${esc(new Date(e.t).toLocaleString())}</span>
         <span><strong>${esc(e.actor)}</strong>${who} ${verb} <strong>${esc(e.shop)}</strong>${e.market ? ` <span class="pmk-dim">${esc(e.market)}</span>` : ""}</span>
-        <span class="pmk-price ${e.kind === "buy" ? "pmk-in" : "pmk-outc"}">${esc(formatCp(e.cp))}</span></div>`;
+        <span class="pmk-price ${e.kind === "buy" ? "pmk-in" : "pmk-outc"}">${esc(formatCp(e.cp))}</span>
+        ${e.note ? `<span class="pmk-lognote"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(e.note)}</span>` : ""}</div>`;
     }).join("");
     return `<div class="pmk-logview"><header class="pmk-shead"><a class="pmk-back" data-action="pmkCartBack"><i class="fa-solid fa-arrow-left"></i> Back to the market</a><h2>Trade log</h2></header>
       <div class="pmk-gmbar"><span class="pmk-dim">${log.length} ${log.length === 1 ? "trade" : "trades"}, newest first (the last ${300} are kept).</span><span class="pmk-gap"></span>

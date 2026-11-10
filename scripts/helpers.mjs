@@ -270,6 +270,7 @@ export function cleanLogEntry(e) {
     market: str(e.market, 120),
     items,
     cp: Math.max(0, Math.round(Number(e.cp) || 0)),
+    note: str(e.note, 600),
   };
 }
 
@@ -278,4 +279,11 @@ export function addLogEntry(log, entry) {
   const e = cleanLogEntry(entry);
   const list = (Array.isArray(log) ? log : []).map(cleanLogEntry).filter(Boolean);
   return e ? [e, ...list].slice(0, LOG_MAX) : list.slice(0, LOG_MAX);
+}
+
+/** "Dagger priced by hand at 500 gp (its compendium entry: 2 sp)" for the GM's notice and the log. */
+export function handPricedNote(name, h) {
+  const price = (cp, per) => `${formatCp(cp)}${per > 1 ? ` for ${per}` : ""}`;
+  return h.source ? `${name} priced by hand at ${price(h.cp, h.per)} (its compendium entry: ${price(h.source.cp, h.source.per)})`
+    : `${name} has no compendium entry; priced at ${price(h.cp, h.per)}`;
 }
