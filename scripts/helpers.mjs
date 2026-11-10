@@ -27,6 +27,9 @@ export function cleanMarket(m) {
     open: !!m.open,
     sort: Number.isFinite(Number(m.sort)) ? Number(m.sort) : 0,
     created: Number.isFinite(Number(m.created)) ? Number(m.created) : 0,
+    // A timed restock of every shop, in game days (0: none), and the game time of the last one.
+    restockEvery: m.restockEvery === null || m.restockEvery === undefined || m.restockEvery === "" ? 0 : int(m.restockEvery, 0, 365),
+    lastRestock: m.lastRestock !== null && m.lastRestock !== undefined && m.lastRestock !== "" && Number.isFinite(Number(m.lastRestock)) ? Number(m.lastRestock) : null,
   };
 }
 
@@ -215,8 +218,39 @@ export function cleanShop(raw) {
     unlimited: !!r.unlimited,
     attitude: ATTITUDES.includes(r.attitude) ? r.attitude : "indifferent",
     keeper: ID.test(String(r.keeper ?? "")) ? String(r.keeper) : null,
+    lines: cleanStockLines(r.lines),
+    // How many restocks an item players sold stays for (1: gone at the next one).
+    keepSold: Number.isFinite(Math.round(Number(r.keepSold))) && r.keepSold !== null && r.keepSold !== "" ? Math.max(1, Math.min(9, Math.round(Number(r.keepSold)))) : 2,
   };
 }
+
+/* ------------------------------------------------------------------ */
+/* Stock kinds (0.2)                                                  */
+/* ------------------------------------------------------------------ */
+
+/** A shop item's place in the stock: a staple comes back to `qty` on each restock; rotating stock is cleared and drawn
+ * again; a sold item (one a player sold the shop) stays for `left` more restocks. */
+export const STOCK_KINDS = ["staple", "rotating", "sold"];
+
+/**
+ * An item's stock flag, cleaned. An item with none is a staple (anything the GM puts in a shop by hand is, a design
+ * decision) whose restock quantity is what it has now (`have`).
+ */
+export function cleanStock(raw, have = 0) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  const kind = STOCK_KINDS.includes(r.kind) ? r.kind : "staple";
+  const whole = (v, lo, hi, d) => {
+    const n = Math.round(Number(v));
+    return v !== null && v !== "" && Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d;
+  };
+  const out = { kind };
+  if (kind === "staple") out.qty = whole(r.qty, 0, MAX_QTY, Math.max(0, Math.round(Number(have) || 0)));
+  if (kind === "sold") out.left = whole(r.left, 0, 9, 2);
+  return out;
+}
+
+/** The next kind when the GM clicks an item's stock mark: staple and rotating swap; a sold item becomes a staple. */
+export const nextStockKind = (kind) => (kind === "staple" ? "rotating" : "staple");
 
 /** The price change for an attitude, in percent (positive costs more), or null when the shop won't trade at all. */
 export function attitudePct(attitude, pcts, hostileRefuses = true) {
@@ -357,4 +391,202 @@ export function handPricedNote(name, h) {
   const price = (cp, per) => `${formatCp(cp)}${per > 1 ? ` for ${per}` : ""}`;
   return h.source ? `${name} priced by hand at ${price(h.cp, h.per)} (its compendium entry: ${price(h.source.cp, h.source.per)})`
     : `${name} has no compendium entry; priced at ${price(h.cp, h.per)}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Drawing rotating stock (0.2)                                       */
+/* ------------------------------------------------------------------ */
+
+/** The ready filters a shop's rotating stock is drawn with. `scrolls` and `wands` also make spell scrolls and magic wands
+ * from the spell list (the caller does that part). Each test reads a compendium index entry. */
+const tr = (e) => e?.system?.traits?.value ?? [];
+const cat = (e) => String(e?.system?.category ?? "");
+const usage = (e) => String(e?.system?.usage?.value ?? "");
+const magical = (e) => tr(e).some((t) => t === "magical" || t === "invested" || t === "arcane" || t === "divine" || t === "occult" || t === "primal");
+export const STOCK_FILTERS = [
+  { id: "weapons", label: "Weapons", test: (e) => e.type === "weapon" && e.system?.group !== "bomb" && !tr(e).includes("staff") },
+  { id: "armor", label: "Armor", test: (e) => e.type === "armor" },
+  { id: "shields", label: "Shields", test: (e) => e.type === "shield" },
+  { id: "ammo", label: "Ammunition", test: (e) => e.type === "ammo" },
+  { id: "bombs", label: "Bombs", test: (e) => e.type === "weapon" && e.system?.group === "bomb" },
+  { id: "elixirs", label: "Elixirs and mutagens", test: (e) => e.type === "consumable" && ["elixir", "mutagen"].includes(cat(e)) },
+  { id: "alchemy", label: "Poisons and alchemical tools", test: (e) => e.type === "consumable" && (cat(e) === "poison" || (tr(e).includes("alchemical") && !["elixir", "mutagen", "potion", "oil"].includes(cat(e)))) },
+  { id: "potions", label: "Potions and oils", test: (e) => e.type === "consumable" && ["potion", "oil"].includes(cat(e)) },
+  { id: "scrolls", label: "Scrolls", test: (e) => e.type === "consumable" && cat(e) === "scroll" },
+  { id: "wands", label: "Wands", test: (e) => e.type === "consumable" && cat(e) === "wand" },
+  { id: "staves", label: "Staves", test: (e) => e.type === "weapon" && tr(e).includes("staff") },
+  { id: "talismans", label: "Talismans", test: (e) => e.type === "consumable" && ["talisman", "fulu"].includes(cat(e)) },
+  { id: "weapon-runes", label: "Weapon runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-a-weapon") },
+  { id: "armor-runes", label: "Armor runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-armor") },
+  { id: "worn", label: "Worn items", test: (e) => e.type === "equipment" && usage(e).startsWith("worn") && magical(e) },
+  { id: "held", label: "Held and other magic items", test: (e) => e.type === "equipment" && magical(e) && !usage(e).startsWith("worn") && !usage(e).startsWith("etched") },
+  // Kits are left out: the system unpacks a kit into its contents when it lands on an actor.
+  { id: "gear", label: "Adventuring gear", test: (e) => ["equipment", "backpack", "book"].includes(e.type) && !magical(e) && !usage(e).startsWith("etched") },
+  { id: "treasure", label: "Gems and art", test: (e) => e.type === "treasure" && ["gem", "art-object"].includes(cat(e)) },
+];
+const FILTER_IDS = new Set(STOCK_FILTERS.map((f) => f.id));
+export const filterLabel = (id) => STOCK_FILTERS.find((f) => f.id === id)?.label ?? id;
+
+/** How many a line draws: a size (its range is a world setting) or an exact number. */
+export const AMOUNTS = ["few", "some", "many", "lots"];
+export const AMOUNT_LABEL = { few: "Few", some: "Some", many: "Many", lots: "Lots" };
+export const AMOUNT_DEFAULTS = { few: "1-3", some: "3-6", many: "6-10", lots: "10-20" };
+/** Rarities a line can reach: common only, up to uncommon, or up to rare (unique items are never drawn). */
+export const LINE_RARITIES = ["common", "uncommon", "rare"];
+const RARITY_RANK = { common: 0, uncommon: 1, rare: 2 };
+export const rarityAllowed = (rarity, upTo) => (RARITY_RANK[rarity ?? "common"] ?? 9) <= (RARITY_RANK[upTo] ?? 0);
+
+/** A range written "3-6" (or "4"), as [min, max] within lo..hi; `fallback` when it can't be read. */
+export function parseRange(text, fallback = [1, 1], lo = 1, hi = 50) {
+  const m = String(text ?? "").trim().match(/^(\d+)\s*(?:-|to)?\s*(\d+)?$/);
+  if (!m) return fallback;
+  let a = Math.max(lo, Math.min(hi, Number(m[1]))), b = m[2] === undefined ? a : Math.max(lo, Math.min(hi, Number(m[2])));
+  if (a > b) [a, b] = [b, a];
+  return [a, b];
+}
+export const rollRange = ([a, b], rand = Math.random) => a + Math.floor(rand() * (b - a + 1));
+
+/** A line of a shop's rotating stock: { filter, amount (a size or 1 to 50), rarity (how rare it may draw) }. 12 at
+ * most. Lines saved by earlier builds ({ count, uncommon }) read the same. */
+export const MAX_STOCK_LINES = 12;
+export function cleanStockLines(raw) {
+  const out = [];
+  for (const l of Array.isArray(raw) ? raw : []) {
+    if (!FILTER_IDS.has(l?.filter) || out.length >= MAX_STOCK_LINES) continue;
+    let amount = l.amount ?? l.count;
+    if (!AMOUNTS.includes(amount)) {
+      const n = Math.round(Number(amount));
+      amount = Number.isFinite(n) ? Math.max(1, Math.min(50, n)) : "some";
+    }
+    const rarity = LINE_RARITIES.includes(l.rarity) ? l.rarity : l.uncommon ? "uncommon" : "common";
+    out.push({ filter: l.filter, amount, rarity });
+  }
+  return out;
+}
+/** How many a line draws this time: an exact number, or a roll in its size's range (`ranges`: size to "a-b"). */
+export function lineCount(line, ranges = AMOUNT_DEFAULTS, rand = Math.random) {
+  if (typeof line.amount === "number") return line.amount;
+  return rollRange(parseRange(ranges[line.amount], parseRange(AMOUNT_DEFAULTS[line.amount] ?? "3-6")), rand);
+}
+
+/** Can an index entry be drawn at all: a price, not unique or cursed, not a spell template. (A line decides how rare.) */
+export function drawable(e, templates = new Set()) {
+  const rarity = e?.system?.traits?.rarity ?? "common";
+  if (rarity === "unique") return false;
+  if (tr(e).includes("cursed") || tr(e).includes("artifact")) return false;
+  if (templates.has(e.uuid) || templates.has(e._id)) return false;
+  const p = e?.system?.price?.value ?? {};
+  const cp = (Number(p.pp) || 0) * 1000 + (Number(p.gp) || 0) * 100 + (Number(p.sp) || 0) * 10 + (Number(p.cp) || 0);
+  return cp > 0;
+}
+export const entryLevel = (e) => Math.max(0, Number(e?.system?.level?.value ?? 0) || 0);
+
+/** How likely a level is to be drawn, leaning to the shop's level: each level below it is about two thirds as likely
+ * as the one above (design decision: most draws near the shop's level, a few lower). */
+export const levelWeight = (level, max) => Math.pow(0.62, Math.max(0, max - level));
+
+/**
+ * Draw `count` different entries for one line: a level first (weighted, among levels that have something), then an
+ * entry at that level. `pool` is the line's entries already filtered; `rand` returns [0, 1). Never more than the pool has.
+ */
+export function drawEntries(pool, count, maxLevel, rand = Math.random) {
+  const byLevel = new Map();
+  for (const e of pool) {
+    const lv = entryLevel(e);
+    if (lv > maxLevel) continue;
+    if (!byLevel.has(lv)) byLevel.set(lv, []);
+    byLevel.get(lv).push(e);
+  }
+  const out = [];
+  while (out.length < count && byLevel.size) {
+    const levels = [...byLevel.keys()];
+    const weights = levels.map((lv) => levelWeight(lv, maxLevel));
+    let r = rand() * weights.reduce((a, b) => a + b, 0);
+    let i = 0;
+    while (i < levels.length - 1 && r >= weights[i]) r -= weights[i++];
+    const list = byLevel.get(levels[i]);
+    const [pick] = list.splice(Math.floor(rand() * list.length), 1);
+    if (!list.length) byLevel.delete(levels[i]);
+    out.push(pick);
+  }
+  return out;
+}
+
+/** How many of a drawn item a shop gets: consumables (but wands, which are used again), bombs and ammunition come in a
+ * stack (of their batch) rolled in `stack` (a world setting, 1 to 4 by default), everything else one each. */
+export const stacks = (e) => (e?.type === "consumable" && e?.system?.category !== "wand") || e?.type === "ammo" || (e?.type === "weapon" && e?.system?.group === "bomb");
+export const drawnQty = (e, rand = Math.random, stack = [1, 4]) => (stacks(e) ? rollRange(stack, rand) : 1);
+
+/** Can a spell (an index entry of the spell list) go on a scroll or in a wand: not a cantrip, focus spell or ritual,
+ * and no rarer than the line allows (`upTo`: common, uncommon or rare; true means uncommon, as earlier builds). */
+export function scribable(e, upTo = "common") {
+  const t = tr(e);
+  if (t.includes("cantrip") || t.includes("focus")) return false;
+  if (e?.system?.ritual) return false;
+  return rarityAllowed(e?.system?.traits?.rarity, upTo === true ? "uncommon" : upTo || "common");
+}
+
+/**
+ * Draw `count` different spells for scrolls or wands. `ranks` maps each rank to its template's item level; a rank is
+ * chosen by that level's weight (as `drawEntries` does), then a spell of exactly that rank. Returns [{ spell, rank }].
+ */
+export function drawSpells(spells, ranks, count, maxLevel, rand = Math.random) {
+  const byRank = new Map();
+  for (const sp of spells) {
+    const r = Number(sp?.system?.level?.value) || 0;
+    const lv = ranks.get(r);
+    if (lv === undefined || lv === null || lv > maxLevel) continue;
+    if (!byRank.has(r)) byRank.set(r, []);
+    byRank.get(r).push(sp);
+  }
+  const out = [];
+  while (out.length < count && byRank.size) {
+    const rs = [...byRank.keys()];
+    const weights = rs.map((r) => levelWeight(ranks.get(r), maxLevel));
+    let x = rand() * weights.reduce((a, b) => a + b, 0);
+    let i = 0;
+    while (i < rs.length - 1 && x >= weights[i]) x -= weights[i++];
+    const list = byRank.get(rs[i]);
+    const [spell] = list.splice(Math.floor(rand() * list.length), 1);
+    if (!list.length) byRank.delete(rs[i]);
+    out.push({ spell, rank: rs[i] });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Restocking (0.2)                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What a restock does to a shop's items (`items`: { id, qty, stock } with the raw stock mark): staples go back to
+ * exactly their number, rotating stock is cleared, and sold items count down, going when none are left. With
+ * `keepSold`, sold items neither count down nor go this time. Returns { refill: [{ id, qty }], remove: [id],
+ * age: [{ id, left }] }.
+ */
+export function restockPlan(items, { keepSold = false } = {}) {
+  const refill = [], remove = [], age = [];
+  for (const it of items) {
+    const st = cleanStock(it.stock, it.qty);
+    if (st.kind === "staple") {
+      if (st.qty !== it.qty) refill.push({ id: it.id, qty: st.qty });
+    } else if (st.kind === "rotating") remove.push(it.id);
+    else if (!keepSold) {
+      if (st.left <= 1) remove.push(it.id);
+      else age.push({ id: it.id, left: st.left - 1 });
+    }
+  }
+  return { refill, remove, age };
+}
+
+/** Is a timed restock due? `every` in days, times in seconds of game time. A market never restocked starts its clock at
+ * the first check (returns false, and the caller notes the time). */
+export const restockDue = (every, last, now) => every > 0 && last !== null && Number.isFinite(last) && now - last >= every * 86400;
+
+/** A compendium source as a key that matches old and new forms ("Compendium.pack.ID" and "Compendium.pack.Item.ID"):
+ * the pack and the document id. */
+export function sourceKey(uuid) {
+  const parts = String(uuid ?? "").split(".");
+  if (parts[0] !== "Compendium" || parts.length < 4) return null;
+  return `${parts[1]}.${parts[2]}.${parts[parts.length - 1]}`;
 }

@@ -64,10 +64,28 @@ On a shop's page:
 - **Shown / Hidden**: a hidden shop doesn't appear to players even in a visible market (a fence, a back room).
 - **Open / Closed**: players can browse a closed shop but not trade there, even in an open market (closed for the night, sold out until the caravan comes). The market's own switches come first: players can't trade anywhere in a closed market.
 - **The purse** is the merchant's own coins, the money buyers pay in and the money it pays for what players sell. **Fill purse** tops it up to one level's party treasure for the shop's level (GM Core's table; 100 gp below level 1). It only adds coins, never takes any away, and you can always change the coins on the sheet.
-- **Settings**: the shop's level (at 0 it takes its market's), whether it buys from players, what it pays (50% of an item's price and 100% of treasure's value by default), an unlimited purse for a shop that never runs out, and its attitude (see below).
+- **Settings**: the shop's level (at 0 it takes its market's), whether it buys from players, what it pays (50% of an item's price and 100% of treasure's value by default), an unlimited purse for a shop that never runs out, how many restocks it keeps what players sold, its rotating stock lines (see Stock and restocks) and its attitude (see below).
 - **Merchant sheet** opens the PF2e sheet.
 
-Shops sell identified goods: an item the merchant has unidentified shows, and sells, as the real item, with a note for you.
+Shops sell identified goods: an item put in a shop unidentified is identified there.
+
+### Stock and restocks
+
+Each item in a shop is one of three kinds, shown to you on its line (click the mark to swap staple and rotating):
+
+- **Staples** come back to their number on every restock (right-click the mark to set it). Anything you drag into a shop is a staple, and a staple that sells out stays on the list as sold out.
+- **Rotating** stock is cleared on a restock and drawn again.
+- **Sold** items are what players sold the shop. They're for sale at full price and stay for two restocks by default (gone at the second; a shop setting), so selling the day before market day still leaves a chance to buy back.
+
+Stock a shop had before version 0.2 becomes staples of what it has, the first time a GM loads the world.
+
+A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Few Scrolls" or "4 Potions and oils", from 18 ready filters, each common only, up to uncommon or up to rare. Few, Some, Many and Lots draw a number in a range (1-3, 3-6, 6-10, 10-20 by default; module settings). Items are drawn from the system's compendium up to the shop's level, most of them near that level; consumables (not wands), bombs and ammunition come in stacks of one to four (a setting); scrolls and some wands get a random spell of a rank that fits. Nothing the shop already stocks is drawn again (for scrolls and wands, the same spell); Draw adds to what's there, a restock replaces the rotating stock.
+
+- **Draw** shows a draw from the lines to look over, with Draw again, and adds it as rotating stock.
+- **Restock** puts staples back, clears and redraws rotating stock, counts sold items down and fills the purse; you can skip the draw or keep sold items that once. **Restock all** on a market does every shop.
+- A market can **restock every so many days** of game time (Edit): when that much time has passed on the world clock, every shop restocks once, however long it's been. Restock all starts the count again.
+
+While a shop is browse only, players see its staples, plus the rest of its stock if they saw it open since its last restock ("the stock has changed since your last visit" otherwise).
 
 ### Shopkeepers and prices
 
@@ -89,7 +107,7 @@ These are settings, as is whether hostile shopkeepers trade at all. Treasure (ge
 
 ## For players
 
-Open the **Marketplace**, pick a market and a shop. **Trading as** chooses which of your characters is shopping (or the party stash, if you own the party); prices are for that character.
+Open the **Marketplace**, pick a market and a shop. Click an item for its description; right-click it for its full sheet. **Trading as** chooses which of your characters is shopping (or the party stash, if you own the party); prices are for that character.
 
 **Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off.
 
@@ -105,6 +123,9 @@ As with everything in Foundry, every actor and every world setting reaches every
 
 ## Settings
 
+- **Pathfinder sheet look: color** (each user, Red): the color of the Pathfinder sheet look: Red, Green, Blue, Purple, Brown or Black.
+- **Stock line size: Few, Some, Many, Lots** (world, 1-3, 3-6, 6-10, 10-20): how many a rotating stock line of that size draws.
+- **Drawn consumables per stack** (world, 1-4): how many of each consumable, bomb or ammunition a draw gives, in batches.
 - **Shop purse size (%)** (world, 100): how full Fill purse and new shops make a purse. Lower it for a poor region, raise it for a rich one.
 - **Hostile shopkeepers won't trade** (world, on): off lets them trade at the Hostile price change.
 - **Price change** for each attitude (world): in percent, positive costs more, negative is a discount. Buying only; treasure is never discounted.

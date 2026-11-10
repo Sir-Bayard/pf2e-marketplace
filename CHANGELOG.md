@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0
+
+Stock tools.
+
+- **Staples, rotating stock and sold items**: each item in a shop has a kind, shown to the GM on its line. Staples come back to their number on a restock (anything dragged into a shop is one, existing stock becomes one, and one that sells out stays as sold out); rotating stock is cleared and drawn again; items players sold stay for two restocks by default (a shop setting) and don't stack with the shop's own stock.
+- **Rotating stock lines** per shop, from 18 ready filters (weapons, armor, potions, scrolls, runes, worn items, gems and more), each Few, Some, Many, Lots (ranges in the module settings) or an exact number, common only, up to uncommon or up to rare, drawn from the system's compendium up to the shop's level and mostly near it, never something the shop already has. Consumables come in stacks (a setting, 1 to 4 by default). Scrolls and some wands get a random spell. **Draw** shows a draw to look over before adding it.
+- **Restock** a shop or every shop in a market: staples back, rotating stock redrawn, sold items counted down, purses filled. A market can restock every so many days of game time.
+- A browse-only shop shows players its staples, plus the rest if they saw it open since its last restock.
+- Anything put in a shop unidentified is identified there.
+- Right-click an item in a shop for its full sheet (read-only for players), or one of your own on the Sell tab.
+
 ## 0.1.0
 
 First release.

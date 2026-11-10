@@ -65,6 +65,8 @@ export function stockRows(actor) {
       inside: !!item.system?.containerId,
       // Shown and sold identified; the GM sees a note that the sheet has it unidentified.
       identified: item.isIdentified !== false,
+      // The module's stock mark (staple, rotating, sold), raw; cleaned by the caller.
+      stock: item.flags?.[MOD_ID]?.stock ?? null,
     });
   }
   return out;
@@ -139,13 +141,21 @@ export async function giveItems(actor, datas) {
   else await actor.createEmbeddedDocuments("Item", datas);
 }
 
-/** Take a quantity out of a shop's stock: the item goes when none are left, as PF2e's own sale does. */
+/** Take a quantity out of a shop's stock. Rotating and sold stock goes when none are left, as PF2e's own sale does; a
+ * staple (an item with no stock mark is one) stays at none, sold out until the next restock. An actor's own items
+ * (a character selling) always go at none. */
 export async function takeFromStock(item, qty) {
   // Never more than there is now: a stack that shrank since the check is an error, not a deletion.
   if (quantityOf(item) < qty) throw new Error(`only ${quantityOf(item)} of ${item.name} left`);
   const left = quantityOf(item) - qty;
-  if (left < 1) await item.delete();
-  else await item.update({ "system.quantity": left });
+  const mark = item.flags?.[MOD_ID]?.stock;
+  const staple = isMerchant(item.parent) && (mark?.kind ?? "staple") === "staple";
+  if (left < 1 && !staple) return void (await item.delete());
+  // An unmarked shop item is a staple of what it had before this sale: write that down now, or every sale would lower
+  // what it restocks to.
+  const change = { "system.quantity": Math.max(0, left) };
+  if (staple && !mark) change[`flags.${MOD_ID}.stock`] = { kind: "staple", qty: quantityOf(item) };
+  await item.update(change, { pmkInternal: true });
 }
 
 /** Actors a user can buy for: characters they own, and the party (its stash) if they own it. A GM can buy for any
@@ -195,8 +205,8 @@ function granted(item) {
 }
 
 /** The data for an item a shop bought: the quantity sold, out of any container, unequipped, marked as sold to the shop
- * (flag `stock.kind`, for 0.2's rotation). */
-export function soldCopy(item, qty, mod) {
+ * for `left` more restocks (flag `stock`). */
+export function soldCopy(item, qty, mod, left = 2) {
   const data = item.toObject();
   delete data._id;
   data.system ??= {};
@@ -206,7 +216,7 @@ export function soldCopy(item, qty, mod) {
   delete data.system.temporary;
   data.flags ??= {};
   if (data.flags.pf2e?.grantedBy) delete data.flags.pf2e.grantedBy;
-  data.flags[mod] = { ...(data.flags[mod] ?? {}), stock: { kind: "sold", left: 2 } };
+  data.flags[mod] = { ...(data.flags[mod] ?? {}), stock: { kind: "sold", left } };
   return data;
 }
 
@@ -249,4 +259,74 @@ export async function handPriced(item) {
   // The same price per unit, whatever the batch size.
   if (scp * per === cp * sper) return null;
   return { cp, per, source: { cp: scp, per: sper } };
+}
+
+/* ------------------------------------------------------------------ */
+/* The compendium, for drawing stock (0.2)                            */
+/* ------------------------------------------------------------------ */
+
+const EQUIPMENT_PACK = "pf2e.equipment-srd";
+const SPELL_PACK = "pf2e.spells-srd";
+let equipmentCache = null, spellCache = null;
+
+/** The system's equipment as index entries, with the fields the filters read (`getIndex({ fields })`). */
+export async function equipmentIndex() {
+  if (equipmentCache) return equipmentCache;
+  const pack = game.packs.get(EQUIPMENT_PACK);
+  if (!pack) return [];
+  const idx = await pack.getIndex({ fields: ["system.level.value", "system.traits.rarity", "system.traits.value", "system.usage.value", "system.category", "system.group", "system.price.value", "system.quantity"] });
+  equipmentCache = [...idx];
+  return equipmentCache;
+}
+
+/** The system's spells as index entries (rank, traits, rarity, ritual). */
+export async function spellIndex() {
+  if (spellCache) return spellCache;
+  const pack = game.packs.get(SPELL_PACK);
+  if (!pack) return [];
+  const idx = await pack.getIndex({ fields: ["system.level.value", "system.traits.value", "system.traits.rarity", "system.traits.traditions", "system.ritual"] });
+  spellCache = [...idx];
+  return spellCache;
+}
+
+/** The system's scroll and wand templates (`CONFIG.PF2E.spellcastingItems`): for each kind, rank to { uuid, level }. */
+export async function spellTemplates() {
+  const out = { scroll: new Map(), wand: new Map() };
+  const conf = CONFIG.PF2E?.spellcastingItems ?? {};
+  const index = await equipmentIndex();
+  for (const kind of ["scroll", "wand"]) {
+    for (const [rank, uuid] of Object.entries(conf[kind]?.compendiumUuids ?? {})) {
+      if (!uuid) continue;
+      const e = index.find((x) => x.uuid === uuid);
+      if (e) out[kind].set(Number(rank), { uuid, level: Number(e.system?.level?.value) || 0 });
+    }
+  }
+  return out;
+}
+
+/** Item data for a compendium entry, as a world copy that remembers its source (`fromCompendium`). */
+export async function itemFromEntry(uuid) {
+  const doc = await fromUuid(uuid);
+  if (!doc) return null;
+  return game.items.fromCompendium(doc, { keepId: false });
+}
+
+/** A scroll or wand of a spell at a rank, the way the system makes one: its template, the spell inside it heightened to
+ * the rank, the system's name for it, and the spell's traditions among its traits. */
+export async function spellItemData(kind, templateUuid, spellUuid, rank) {
+  const [template, spell] = await Promise.all([fromUuid(templateUuid), fromUuid(spellUuid)]);
+  if (!template || !spell) return null;
+  const data = game.items.fromCompendium(template, { keepId: false });
+  const sp = spell.toObject();
+  sp._id = foundry.utils.randomID();
+  sp.system.location = { ...(sp.system.location ?? {}), heightenedLevel: rank };
+  // Remember which spell it is, so a shop isn't given the same scroll twice.
+  sp._stats = { ...(sp._stats ?? {}), compendiumSource: spell.uuid };
+  data.system.spell = sp;
+  const tmpl = CONFIG.PF2E?.spellcastingItems?.[kind]?.nameTemplate;
+  data.name = tmpl ? game.i18n.format(tmpl, { name: spell.name, level: rank }) : `${template.name}: ${spell.name}`;
+  const traditions = [...(spell.system?.traits?.traditions ?? [])];
+  data.system.traits.value = [...new Set([...(data.system.traits?.value ?? []), ...traditions])];
+  data.system.description.value = `<p>@UUID[${spell.uuid}]{${spell.name}}</p>${data.system.description?.value ?? ""}`;
+  return data;
 }

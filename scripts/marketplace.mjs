@@ -7,11 +7,11 @@
 
 import {
   esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTradeShop, MAX_LINES, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, takeFromCart, listOf,
-  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, addLogEntry, cleanLogEntry, handPricedNote,
+  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, cleanStock, nextStockKind, STOCK_FILTERS, filterLabel, cleanStockLines, drawable, drawEntries, drawnQty, scribable, drawSpells, MAX_STOCK_LINES, restockPlan, restockDue, sourceKey, AMOUNTS, AMOUNT_LABEL, AMOUNT_DEFAULTS, LINE_RARITIES, rarityAllowed, parseRange, lineCount, addLogEntry, cleanLogEntry, handPricedNote,
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
-  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced,
+  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
 } from "./pf2e.mjs";
 
 const MOD = "pf2e-marketplace";
@@ -492,7 +492,7 @@ async function putBack(taken) {
     data.system.quantity = t.qty;
     const left = t.actor.items.get(data._id);
     // What's left of the stack takes it back; a stack taken whole comes back with its own id, so carts still find it.
-    const put = left ? left.update({ "system.quantity": quantityOf(left) + t.qty }) : t.actor.createEmbeddedDocuments("Item", [data], { keepId: true });
+    const put = left ? left.update({ "system.quantity": quantityOf(left) + t.qty }, { pmkInternal: true }) : t.actor.createEmbeddedDocuments("Item", [data], { keepId: true });
     await put.catch((err) => console.error(`${MOD} | couldn't put ${t.qty} ${data.name} back on ${t.actor.name}`, err));
   }
 }
@@ -557,7 +557,7 @@ async function processTrade(msg, sender) {
   // what they bought. A step that fails undoes the ones before it, deliveries included. After that the trade stands;
   // the money still to go in is paid, and a payment that fails is noted for the GM rather than undoing the trade.
   const boughtCopies = buys.map((b) => boughtCopy(b.item, b.qty));
-  const soldCopies = sold.map((x) => ({ shop: x.shopDoc, data: soldCopy(x.item, x.qty, MOD) }));
+  const soldCopies = sold.map((x) => ({ shop: x.shopDoc, data: soldCopy(x.item, x.qty, MOD, x.conf.keepSold) }));
   const changed = "the stock or your inventory changed. Check the cart and try again.";
   const taken = await takeAll(buys, changed);
   try {
@@ -590,7 +590,7 @@ async function processTrade(msg, sender) {
   }
   try {
     delivered.push(await deliver(trader, boughtCopies));
-    for (const c of soldCopies) delivered.push(await deliver(c.shop, [c.data]));
+    for (const c of soldCopies) delivered.push(await deliver(c.shop, [c.data], giveSold));
   } catch (err) {
     await undo();
     throw err;
@@ -623,12 +623,26 @@ async function processTrade(msg, sender) {
   return { trader: trader.name, buy: s.buy, sell: s.sell, net: s.net, bought: named(buys), soldNames: named(sold), note: [...notes.values()].flat().join("; "), unpaid: unpaidNote, lines, sales };
 }
 
+/** Open a shop item's sheet. The GM gets the real item; a player gets a read-only copy of it as the shop sells it
+ * (identified), since players can't open a merchant's items. */
+function showShopItem(shop, itemId, isGM) {
+  const item = shop?.items.get(itemId);
+  if (!item) return;
+  if (isGM) return void item.sheet.render(true);
+  const data = item.toObject();
+  delete data._id;
+  if (data.system?.identification) data.system.identification.status = "identified";
+  data.ownership = { default: CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER };
+  const copy = new CONFIG.Item.documentClass(data);
+  copy.sheet.render(true, { editable: false });
+}
+
 /** Give an actor items, remembering what was there before, so it can be undone. */
-async function deliver(actor, datas) {
+async function deliver(actor, datas, give = giveItems) {
   const before = new Map(actor.items.map((i) => [i.id, quantityOf(i)]));
   const record = { actor, before };
   try {
-    await giveItems(actor, datas);
+    await give(actor, datas);
   } catch (err) {
     // Part of it may have landed.
     await undeliver(record);
@@ -636,13 +650,29 @@ async function deliver(actor, datas) {
   }
   return record;
 }
+/** What a shop bought from a player: stacked only with the same item it bought earlier and still holds for as many
+ * restocks, never with its staples or rotating stock (the system's stacking ignores the stock mark). */
+async function giveSold(shop, datas) {
+  for (const data of datas) {
+    const src = sourceKey(data._stats?.compendiumSource ?? data.flags?.core?.sourceId);
+    const left = data.flags?.[MOD]?.stock?.left;
+    const same = shop.items.find((i) => {
+      const st = i.flags?.[MOD]?.stock;
+      return st?.kind === "sold" && st.left === left && i.name === data.name && i.type === data.type
+        && sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId) === src && !i.system?.containerId;
+    });
+    if (same) await same.update({ "system.quantity": quantityOf(same) + (Number(data.system?.quantity) || 1) }, { pmkInternal: true });
+    else await shop.createEmbeddedDocuments("Item", [data]);
+  }
+}
+
 /** Undo a delivery: items it made are deleted, stacks it added to go back to what they were. */
 async function undeliver({ actor, before }) {
   try {
     const made = actor.items.filter((i) => !before.has(i.id)).map((i) => i.id);
     if (made.length) await actor.deleteEmbeddedDocuments("Item", made);
     const grown = actor.items.filter((i) => before.has(i.id) && quantityOf(i) > before.get(i.id)).map((i) => ({ _id: i.id, "system.quantity": before.get(i.id) }));
-    if (grown.length) await actor.updateEmbeddedDocuments("Item", grown);
+    if (grown.length) await actor.updateEmbeddedDocuments("Item", grown, { pmkInternal: true });
   } catch (err) {
     console.error(`${MOD} | couldn't undo items given to ${actor.name}; check its inventory`, err);
     ui.notifications.error(esc(`Marketplace: a failed trade left items on ${actor.name}. Check its inventory.`), { permanent: true });
@@ -877,9 +907,13 @@ class MarketApp extends Base {
       pmkCheckout: MarketApp.#onCheckout,
       pmkTab: MarketApp.#onTab,
       pmkSellAdd: MarketApp.#onSellAdd,
+      pmkKind: MarketApp.#onKind,
       pmkStep: MarketApp.#onStep,
       pmkCloseShop: MarketApp.#onCloseShop,
       pmkFill: MarketApp.#onFill,
+      pmkDraw: MarketApp.#onDraw,
+      pmkRestock: MarketApp.#onRestock,
+      pmkRestockAll: MarketApp.#onRestockAll,
       pmkShopSettings: MarketApp.#onShopSettings,
       pmkLog: MarketApp.#onLog,
       pmkClearLog: MarketApp.#onClearLog,
@@ -983,6 +1017,7 @@ class MarketApp extends Base {
         <button type="button" class="pmk-tog ${market.visible ? "on" : ""}" data-action="pmkToggle" data-what="visible" data-tooltip="Players see and browse this market"><i class="fa-solid ${market.visible ? "fa-eye" : "fa-eye-slash"}"></i> Visible</button>
         <button type="button" class="pmk-tog ${market.open ? "on" : ""}" data-action="pmkToggle" data-what="open" data-tooltip="Players can buy and sell here"><i class="fa-solid ${market.open ? "fa-store" : "fa-store-slash"}"></i> Open</button>
         <span class="pmk-gap"></span>
+        <button type="button" data-action="pmkRestockAll" data-tooltip="${market.restockEvery ? `Every ${market.restockEvery} ${market.restockEvery === 1 ? "day" : "days"} of game time; ` : ""}restock every shop now"><i class="fa-solid fa-rotate"></i> Restock all</button>
         <button type="button" data-action="pmkNewShop"><i class="fa-solid fa-plus"></i> New shop</button>
         <button type="button" data-action="pmkEditMarket"><i class="fa-solid fa-pen"></i> Edit</button>
         <button type="button" data-action="pmkDeleteMarket" data-tooltip="Delete this market (its shops stay)"><i class="fa-solid fa-trash"></i></button>
@@ -990,7 +1025,9 @@ class MarketApp extends Base {
     const folder = market.folder ? game.folders.get(market.folder) : null;
     const cards = shops.map((s) => {
       const actor = game.actors.get(s.id);
-      const count = stockRows(actor).length;
+      // As the shop page shows it: a browse-only shop players haven't seen since its last restock counts its staples.
+      const staplesOnly = !this.isGM && !tradeMarketFor(s.id, game.user) && !remembered(actor);
+      const count = stockRows(actor).filter((r) => !staplesOnly || cleanStock(r.stock, r.qty).kind === "staple").length;
       const marks = [
         this.isGM && s.hidden ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : "",
         s.closed && (this.isGM || market.open) ? `<i class="fa-solid fa-store-slash" data-tooltip="${this.isGM ? "Closed: players can browse but not trade" : "Browse only for now"}"></i>` : "",
@@ -1043,10 +1080,12 @@ class MarketApp extends Base {
 
   async #shopHTML(market, actor) {
     if (!actor) return this.#marketHTML(market, shopsFor(market));
-    const rows = stockRows(actor);
     const own = shopRow(actor);
     // Open to this user in any market that holds it (a shop can be in two), as the cart and the GM's client see it.
     const trade = !!tradeMarketFor(actor.id, game.user);
+    // Browse only: players see the staples, and the rest only if they saw the shop open since its last restock.
+    const staplesOnly = !trade && !this.isGM && !remembered(actor);
+    const rows = stockRows(actor).filter((r) => !staplesOnly || cleanStock(r.stock, r.qty).kind === "staple");
     const conf = shopConf(actor);
     const cart = loadCart();
     const { list: buyers, chosen } = buyerChoices(cart);
@@ -1060,6 +1099,8 @@ class MarketApp extends Base {
         <button type="button" class="pmk-tog ${own.closed ? "" : "on"}" data-action="pmkCloseShop" data-tooltip="${own.closed ? "Closed: players can browse it but not trade, even in an open market" : "Players can trade here when its market is open"}"><i class="fa-solid ${own.closed ? "fa-store-slash" : "fa-store"}"></i> ${own.closed ? "Closed" : "Open"}</button>
         ${conf.unlimited ? "" : `<button type="button" data-action="pmkFill" data-tooltip="Top the purse up to ${esc(formatCp(purseFor(shopLevel(actor, market), game.settings.get(MOD, "purseScale"))))} (level ${shopLevel(actor, market)})"><i class="fa-solid fa-coins"></i> Fill purse</button>`}
         <span class="pmk-gap"></span>
+        <button type="button" data-action="pmkRestock" data-tooltip="Staples back, rotating stock drawn again, purse filled"><i class="fa-solid fa-rotate"></i> Restock</button>
+        <button type="button" data-action="pmkDraw" data-tooltip="Draw more rotating stock now"><i class="fa-solid fa-dice"></i> Draw</button>
         <button type="button" data-action="pmkShopSettings"><i class="fa-solid fa-sliders"></i> Settings</button>
         <button type="button" data-action="pmkSheet"><i class="fa-solid fa-file-invoice"></i> Merchant sheet</button>
       </div>` : "";
@@ -1084,6 +1125,7 @@ class MarketApp extends Base {
       </header>
       ${gmBar}
       ${this.#statusHTML(market, actor)}
+      ${staplesOnly ? `<p class="pmk-hint">Staples only: the stock has changed since your last visit.</p>` : ""}
       ${trade ? tradingAs : ""}
       ${trade ? priceLine : ""}
       ${tabs}
@@ -1102,13 +1144,14 @@ class MarketApp extends Base {
         const open = this.view.open.has(r.id);
         const rar = RARITY[r.rarity] ? `<span class="pmk-rar pmk-${esc(r.rarity)}">${RARITY[r.rarity]}</span>` : "";
         const note = r.holds ? `<span class="pmk-note">holds ${r.holds} ${r.holds === 1 ? "item" : "items"}; not for sale as it is</span>`
-          : !r.identified && this.isGM ? `<span class="pmk-note">unidentified on the sheet; players see it, and buy it, identified</span>` : "";
+          : "";
+        const kind = this.isGM ? this.#kindHTML(r) : "";
         const shown = adjust(r.cp, pctFor(pct, r.type === "treasure"));
         const was = pct && shown !== r.cp ? ` <s class="pmk-per">${esc(formatCp(r.cp))}</s>` : "";
         const price = `${esc(formatCp(shown))}${was}${r.per > 1 ? ` <span class="pmk-per">for ${r.per}</span>` : ""}`;
         list.push(`<div class="pmk-row ${open ? "open" : ""} ${r.qty ? "" : "pmk-out"}" data-action="pmkItem" data-id="${esc(r.id)}">
           <img src="${esc(r.img)}" alt="">
-          <span class="pmk-rn">${esc(r.name)} ${rar}${note}</span>
+          <span class="pmk-rn">${esc(r.name)} ${rar}${kind}${note}</span>
           <span class="pmk-lvl">${r.level}</span>
           <span class="pmk-qty">${r.qty ? `×${r.qty}` : "sold out"}</span>
           <span class="pmk-price">${price}</span>
@@ -1124,6 +1167,17 @@ class MarketApp extends Base {
         <div class="pmk-rowhead"><span></span><span>Item</span><span>Level</span><span>Stock</span><span>Price</span><span></span></div>
         ${body}
       </div>`;
+  }
+
+  /** The GM's stock mark on a row: staple (and what it restocks to), rotating, or sold (restocks left). A click swaps
+   * staple and rotating; a right-click on a staple sets what it restocks to. */
+  #kindHTML(r) {
+    const st = cleanStock(r.stock, r.qty);
+    const label = st.kind === "staple" ? `Staple ${st.qty}` : st.kind === "rotating" ? "Rotating" : `Sold · ${st.left} left`;
+    const tip = st.kind === "staple" ? `Comes back to ${st.qty} on a restock. Click: rotating. Right-click: set the number.`
+      : st.kind === "rotating" ? "Cleared on a restock. Click: staple."
+      : `Sold by a player; gone after ${st.left} more ${st.left === 1 ? "restock" : "restocks"}. Click: staple.`;
+    return `<a class="pmk-kind pmk-kind-${st.kind}" data-action="pmkKind" data-id="${esc(r.id)}" data-tooltip="${esc(tip)}">${esc(label)}</a>`;
   }
 
   /** The Sell tab: what the chosen character carries, with the shop's offer for each. Choices go into the cart. */
@@ -1142,7 +1196,7 @@ class MarketApp extends Base {
       if (!r.why) total += offer(r, here);
       const each = offer(r, r.per);
       const note = r.why ? esc(r.why) : `${each ? esc(formatCp(each)) : "under 1 cp"}${r.per > 1 ? ` for ${r.per}` : " each"}${elsewhere ? `; offered to ${esc(elsewhere.name)}` : ""}`;
-      return `<div class="pmk-srow ${r.why ? "pmk-no" : ""}">
+      return `<div class="pmk-srow ${r.why ? "pmk-no" : ""}" data-id="${esc(r.id)}">
         <img src="${esc(r.img)}" alt="">
         <span class="pmk-rn">${esc(r.name)}<span class="pmk-note">${note}</span></span>
         <span class="pmk-qty">×${r.qty}</span>
@@ -1360,6 +1414,24 @@ class MarketApp extends Base {
       saveCart(cart);
       this.render();
     });
+    // A right-click on an item's line opens its sheet: a shop's item (read-only for players, as the shop sells it) or
+    // the trader's own item on the Sell tab.
+    for (const row of this.element.querySelectorAll(".pmk-row[data-id], .pmk-srow[data-id]")) {
+      row.addEventListener("contextmenu", (ev) => {
+        if (ev.target.closest(".pmk-addbtn, .pmk-kind, input")) return;
+        ev.preventDefault();
+        if (row.classList.contains("pmk-row")) showShopItem(game.actors.get(this.view.shop), row.dataset.id, this.isGM);
+        else buyerChoices(loadCart()).chosen?.items.get(row.dataset.id)?.sheet.render(true);
+      });
+    }
+    // GM: a right-click on a staple's mark sets what it restocks to.
+    for (const chip of this.element.querySelectorAll(".pmk-kind-staple")) {
+      chip.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.#setStapleQty(chip.dataset.id);
+      });
+    }
     // A right-click on an add or offer button takes one off.
     for (const btn of this.element.querySelectorAll(".pmk-addbtn")) {
       btn.addEventListener("contextmenu", (ev) => {
@@ -1498,6 +1570,37 @@ class MarketApp extends Base {
     this.render();
   }
 
+  /** GM: swap an item between staple and rotating (a staple restocks to what it has now, or 1). */
+  static async #onKind(event, target) {
+    if (!this.isGM) return;
+    const item = game.actors.get(this.view.shop)?.items.get(target.dataset.id);
+    if (!item) return;
+    const raw = item.flags?.[MOD]?.stock ?? {};
+    const st = cleanStock(raw, quantityOf(item));
+    const kind = nextStockKind(st.kind);
+    // A staple made rotating and back keeps its number; otherwise it's what the item has now (at least 1).
+    const qty = Number.isFinite(Number(raw.qty)) && raw.qty !== null ? Math.max(0, Math.round(Number(raw.qty))) : Math.max(1, quantityOf(item));
+    await item.update({ [`flags.${MOD}.stock`]: kind === "staple" ? { kind, qty } : { kind, qty: st.kind === "staple" ? st.qty : raw.qty ?? null } });
+  }
+
+  /** GM: set what a staple restocks to. */
+  async #setStapleQty(itemId) {
+    const item = game.actors.get(this.view.shop)?.items.get(itemId);
+    if (!item) return;
+    const st = cleanStock(item.flags?.[MOD]?.stock, quantityOf(item));
+    if (st.kind !== "staple") return;
+    const n = await DialogV2().prompt({
+      window: { title: `${realItem(item).name}: restocks to`, icon: "fa-solid fa-boxes-stacked" },
+      classes: ["pmk-dialog"],
+      position: { width: 320 },
+      content: `<div class="pmk-form"><label>Number <input type="number" name="qty" value="${st.qty}" min="0" max="9999" step="1" autofocus></label></div>`,
+      ok: { label: "Save", icon: "fa-solid fa-check", callback: (event, button) => Number(button.form.elements.qty.value) },
+      rejectClose: false,
+    });
+    if (n === null || n === undefined || !Number.isFinite(n)) return;
+    await item.update({ [`flags.${MOD}.stock`]: cleanStock({ kind: "staple", qty: n }) });
+  }
+
   static #onSellAdd(event, target) {
     this.#offer(target.dataset.id, 1);
   }
@@ -1584,6 +1687,12 @@ class MarketApp extends Base {
     this.render();
   }
 
+  static async #onDraw() {
+    if (!this.isGM) return;
+    const shop = game.actors.get(this.view.shop);
+    if (shop) await drawStockDialog(shop, marketById(this.view.market));
+  }
+
   static async #onFill() {
     if (!this.isGM) return;
     const shop = game.actors.get(this.view.shop);
@@ -1635,7 +1744,7 @@ class MarketApp extends Base {
     if (folder === "_new") folder = (await Folder.create({ name: data.name, type: "Actor" }))?.id ?? null;
     await mutate((d) => {
       const sort = Math.max(0, ...d.markets.map((m) => m.sort)) + 1;
-      d.markets.push({ id, name: data.name, img: data.img, description: data.description, level: data.level, folder, extra: [], visible: false, open: false, sort, created: Date.now() });
+      d.markets.push({ id, name: data.name, img: data.img, description: data.description, level: data.level, folder, extra: [], visible: false, open: false, sort, created: Date.now(), restockEvery: data.restockEvery, lastRestock: data.restockEvery ? game.time.worldTime : null });
     });
     this.view.market = id;
     this.view.shop = null;
@@ -1651,7 +1760,9 @@ class MarketApp extends Base {
     let folder = data.folder;
     if (folder === "_new") folder = (await Folder.create({ name: data.name, type: "Actor" }))?.id ?? null;
     await mutateMarket(market.id, (m) => {
-      Object.assign(m, { name: data.name, img: data.img, description: data.description, level: data.level, folder });
+      Object.assign(m, { name: data.name, img: data.img, description: data.description, level: data.level, folder, restockEvery: data.restockEvery });
+      // A new or changed interval counts from now.
+      if (data.restockEvery && (m.lastRestock === null || data.restockEvery !== market.restockEvery)) m.lastRestock = game.time.worldTime;
     });
   }
 
@@ -1677,6 +1788,10 @@ class MarketApp extends Base {
     if (!this.isGM) return;
     const what = target.dataset.what;
     if (what !== "visible" && what !== "open") return;
+    const before = marketById(this.view.market);
+    // Players saw what's in its shops now; a browse-only view shows that until the next restock.
+    const closing = before?.open && (what === "open" || what === "visible");
+    if (closing) await noteSeen(shopsFor(before).map((s) => game.actors.get(s.id)).filter((a) => a && openToPlayers(a)));
     await mutateMarket(this.view.market, (m) => {
       m[what] = !m[what];
       // Open for trade means players can see it too.
@@ -1733,7 +1848,35 @@ class MarketApp extends Base {
     if (!this.isGM) return;
     const actor = game.actors.get(this.view.shop);
     if (!actor) return;
+    if (!actor.flags?.[MOD]?.closed && openToPlayers(actor)) await noteSeen([actor]);
     await actor.update({ [`flags.${MOD}.closed`]: !actor.flags?.[MOD]?.closed });
+  }
+
+  static async #onRestock() {
+    if (!this.isGM) return;
+    const shop = game.actors.get(this.view.shop);
+    if (!shop) return;
+    const opts = await restockDialog(`Restock ${shop.name}`, [shop]);
+    if (!opts || typeof opts !== "object") return;
+    try {
+      const r = await restockShop(shop, marketById(this.view.market), opts);
+      ui.notifications.info(esc(`Marketplace: ${shop.name} restocked (${r.drawn} new).`));
+    } catch (err) {
+      console.error(`${MOD} | restocking ${shop.name} failed`, err);
+      ui.notifications.error(esc(`Marketplace: couldn't restock ${shop.name}. See the console.`));
+    }
+  }
+
+  static async #onRestockAll() {
+    if (!this.isGM) return;
+    const market = marketById(this.view.market);
+    if (!market) return;
+    const shops = shopsFor(market).map((s) => game.actors.get(s.id)).filter(isMerchant);
+    if (!shops.length) return;
+    const opts = await restockDialog(`Restock ${market.name} (${shops.length} ${shops.length === 1 ? "shop" : "shops"})`, shops);
+    if (!opts || typeof opts !== "object") return;
+    const n = await restockMarket(market, opts);
+    if (n) ui.notifications.info(esc(`Marketplace: ${market.name} restocked.`));
   }
 
   static #onSheet() {
@@ -1742,6 +1885,245 @@ class MarketApp extends Base {
 }
 
 /** The GM's form for a shop's settings. */
+/**
+ * Draw a shop's rotating stock from its lines: item data ready to create, marked rotating. Levels lean to the shop's
+ * level; nothing the shop already stocks (by compendium source) or already drawn; scrolls and some wands are made from
+ * the spell list. Returns [{ data, filter }].
+ */
+async function drawStock(shop, market, lines = shopConf(shop).lines, ignore = new Set()) {
+  const maxLevel = Math.max(0, shopLevel(shop, market));
+  const index = await equipmentIndex();
+  const templates = await spellTemplates();
+  const templateIds = new Set([...templates.scroll.values(), ...templates.wand.values()].map((t) => t.uuid));
+  // What the shop has: items by compendium source, scrolls and wands by kind and spell (old and new source forms match).
+  const seen = new Set();
+  for (const i of shop.items) {
+    if (ignore.has(i.id)) continue;
+    const key = sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId);
+    const spell = i.system?.spell;
+    if (spell) seen.add(`${i.system?.category}:${sourceKey(spell._stats?.compendiumSource ?? spell.flags?.core?.sourceId)}`);
+    else if (key) seen.add(key);
+  }
+  const out = [];
+  const pick = (pool, n) => drawEntries(pool.filter((e) => !seen.has(sourceKey(e.uuid))), n, maxLevel);
+  const ranges = Object.fromEntries(AMOUNTS.map((a) => [a, game.settings.get(MOD, `amount-${a}`)]));
+  const stack = parseRange(game.settings.get(MOD, "stackRange"), [1, 4], 1, 100);
+  const spells = async (kind, n, rarity) => {
+    const list = (await spellIndex()).filter((e) => scribable(e, rarity) && !seen.has(`${kind}:${sourceKey(e.uuid)}`));
+    const ranks = new Map([...templates[kind]].map(([r, t]) => [r, t.level]));
+    const picks = drawSpells(list, ranks, n, maxLevel);
+    for (const { spell } of picks) seen.add(`${kind}:${sourceKey(spell.uuid)}`);
+    return (await Promise.all(picks.map(({ spell, rank }) => spellItemData(kind, templates[kind].get(rank).uuid, spell.uuid, rank)))).filter(Boolean);
+  };
+  for (const line of cleanStockLines(lines)) {
+    const f = STOCK_FILTERS.find((x) => x.id === line.filter);
+    const pool = index.filter((e) => f.test(e) && drawable(e, templateIds) && rarityAllowed(e.system?.traits?.rarity, line.rarity));
+    const count = lineCount(line, ranges);
+    let datas = [];
+    if (line.filter === "scrolls") datas = await spells("scroll", count, line.rarity);
+    else {
+      // Wands: about half named wands, half magic wands of a spell.
+      const made = line.filter === "wands" ? await spells("wand", Math.floor(count / 2), line.rarity) : [];
+      const picks = pick(pool, count - made.length);
+      for (const e of picks) seen.add(sourceKey(e.uuid));
+      datas.push(...(await Promise.all(picks.map((e) => itemFromEntry(e.uuid)))).filter(Boolean));
+      datas.push(...made);
+    }
+    for (const data of datas) {
+      data.system.quantity = Math.max(1, Number(data.system.quantity) || 1) * drawnQty(data, Math.random, stack);
+      // Shops sell identified goods.
+      if (data.system.identification) data.system.identification.status = "identified";
+      data.flags ??= {};
+      data.flags[MOD] = { ...(data.flags[MOD] ?? {}), stock: { kind: "rotating" } };
+      out.push({ data, filter: line.filter });
+    }
+  }
+  return out;
+}
+
+/** GM: draw rotating stock from the shop's lines, look it over, and add it (or draw again). */
+async function drawStockDialog(shop, market) {
+  if (!cleanStockLines(shopConf(shop).lines).length) {
+    ui.notifications.info("Marketplace: add rotating stock lines in the shop's Settings first.");
+    return shopSettingsDialog(shop, market);
+  }
+  for (;;) {
+    const drawn = await drawStock(shop, market);
+    if (!drawn.length) return void ui.notifications.warn("Marketplace: nothing to draw at this shop's level.");
+    const rows = drawn.map(({ data, filter }) => {
+      const cp = priceOf({ system: data.system }).cp;
+      return `<tr><td>${esc(data.name)}</td><td>${esc(filterLabel(filter))}</td><td class="pmk-r">${Number(data.system.level?.value) || 0}</td><td class="pmk-r">×${data.system.quantity}</td><td class="pmk-r">${esc(formatCp(cp))}</td></tr>`;
+    }).join("");
+    const choice = await DialogV2().wait({
+      window: { title: `${shop.name}: draw stock`, icon: "fa-solid fa-dice" },
+      classes: ["pmk-dialog"],
+      position: { width: 560 },
+      content: `<table class="pmk-drawn"><thead><tr><th>Item</th><th>Line</th><th class="pmk-r">Level</th><th class="pmk-r">Qty</th><th class="pmk-r">Price</th></tr></thead><tbody>${rows}</tbody></table>`,
+      buttons: [
+        { action: "add", label: "Add as rotating", icon: "fa-solid fa-check", default: true },
+        { action: "again", label: "Draw again", icon: "fa-solid fa-dice" },
+        { action: "cancel", label: "Cancel" },
+      ],
+      rejectClose: false,
+    });
+    if (choice === "again") continue;
+    if (choice === "add") await shop.createEmbeddedDocuments("Item", drawn.map((d) => d.data));
+    return;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Restocking                                                         */
+/* ------------------------------------------------------------------ */
+
+const flagOf = (shop, key) => shop?.flags?.[MOD]?.[key];
+/** Can players trade at this shop right now (in any market that holds it)? */
+const openToPlayers = (shop) => store().markets.some((m) => m.visible && m.open && shopsOf(m, actorRows(), parentOf, false).some((s) => s.id === shop.id && !s.closed));
+/** What players last saw: a shop that stops trading notes its rotation count, so a browse-only view knows whether the
+ * stock has changed since (design decision 13). */
+async function noteSeen(shops) {
+  for (const shop of shops) {
+    const n = Number(flagOf(shop, "rotations")) || 0;
+    if (flagOf(shop, "seenRotation") !== n) await shop.update({ [`flags.${MOD}.seenRotation`]: n });
+  }
+}
+/** Do players see a shop's whole stock while it's browse only? Only when they saw it open since its last restock. */
+const remembered = (shop) => flagOf(shop, "seenRotation") === (Number(flagOf(shop, "rotations")) || 0);
+
+/** A shop's stock items for a restock plan. */
+const planItems = (shop) => stockRows(shop).map((r) => ({ id: r.id, qty: r.qty, stock: r.stock }));
+
+/**
+ * Restock a shop (GM): staples back to their number, rotating stock cleared and drawn again from the shop's lines, sold
+ * items counted down, the purse filled. A restock is a rotation; a shop open to players right then is one they've seen.
+ * Returns what changed.
+ */
+function restockShop(shop, market, opts = {}) {
+  // In the trade queue, so a restock never runs in the middle of a trade with this shop.
+  return queued(() => restockNow(shop, market, opts));
+}
+async function restockNow(shop, market, { keepSold = false, draw = true } = {}) {
+  await markStaples([shop]);
+  const plan = restockPlan(planItems(shop), { keepSold });
+  // Drawn first: if the draw fails, nothing has changed yet. What's about to go may be drawn again.
+  const removing = new Set(plan.remove);
+  const drawn = draw && cleanStockLines(shopConf(shop).lines).length ? await drawStock(shop, market, undefined, removing) : [];
+  if (plan.remove.length) await shop.deleteEmbeddedDocuments("Item", plan.remove);
+  const updates = [
+    ...plan.refill.map((r) => ({ _id: r.id, "system.quantity": r.qty })),
+    ...plan.age.map((a) => ({ _id: a.id, [`flags.${MOD}.stock.left`]: a.left })),
+  ];
+  if (updates.length) await shop.updateEmbeddedDocuments("Item", updates, { pmkInternal: true });
+  if (drawn.length) await shop.createEmbeddedDocuments("Item", drawn.map((d) => d.data));
+  const filled = await fillPurse(shop, market);
+  const rotations = (Number(flagOf(shop, "rotations")) || 0) + 1;
+  await shop.update({ [`flags.${MOD}.rotations`]: rotations, ...(openToPlayers(shop) ? { [`flags.${MOD}.seenRotation`]: rotations } : {}) });
+  return { refilled: plan.refill.length, cleared: plan.remove.length, aged: plan.age.length, drawn: drawn.length, filled };
+}
+
+/** The confirm dialog for a restock: what will happen, with the two choices. Resolves to the options or null. */
+async function restockDialog(title, shops) {
+  let staples = 0, rotating = 0, soldGo = 0, soldStay = 0, lines = 0;
+  for (const shop of shops) {
+    const plan = restockPlan(planItems(shop));
+    staples += plan.refill.length;
+    for (const id of plan.remove) (cleanStock(flagOf(shop.items.get(id), "stock")).kind === "sold" ? soldGo++ : rotating++);
+    soldStay += plan.age.length;
+    lines += cleanStockLines(shopConf(shop).lines).reduce((n, l) => n + lineCount(l, Object.fromEntries(AMOUNTS.map((a) => [a, game.settings.get(MOD, `amount-${a}`)])), () => 0.5), 0);
+  }
+  const bits = [`${staples} staples refilled`, `${rotating} rotating cleared`, `sold items: ${soldGo} go, ${soldStay} stay`, `about ${lines} new drawn`];
+  return DialogV2().wait({
+    window: { title, icon: "fa-solid fa-rotate" },
+    classes: ["pmk-dialog"],
+    position: { width: 420 },
+    content: `<div class="pmk-form"><p>${esc(bits.join(" · "))}; purses filled.</p>
+      <label class="pmk-check"><input type="checkbox" name="draw" ${lines ? "checked" : "disabled"}> Draw new stock</label>
+      <label class="pmk-check"><input type="checkbox" name="keepSold"> Keep sold items this time</label></div>`,
+    buttons: [
+      { action: "ok", label: "Restock", icon: "fa-solid fa-rotate", default: true, callback: (event, button) => ({ draw: button.form.elements.draw.checked, keepSold: button.form.elements.keepSold.checked }) },
+      { action: "cancel", label: "Cancel" },
+    ],
+    rejectClose: false,
+  });
+}
+
+/** Restock every shop of a market (GM), noting the game time for its schedule. */
+async function restockMarket(market, opts) {
+  // The clock first: a shop that fails mustn't make the schedule restock the others again on the next tick.
+  await mutateMarket(market.id, (m) => {
+    m.lastRestock = game.time.worldTime;
+  });
+  const shops = shopsFor(market).map((s) => game.actors.get(s.id)).filter(isMerchant);
+  const failed = [];
+  for (const shop of shops) {
+    try {
+      await restockShop(shop, market, opts);
+    } catch (err) {
+      console.error(`${MOD} | restocking ${shop.name} failed`, err);
+      failed.push(shop.name);
+    }
+  }
+  if (failed.length) ui.notifications.error(esc(`Marketplace: couldn't restock ${listOf(failed)}. See the console.`));
+  return shops.length - failed.length;
+}
+
+/** Give each shop item with no stock mark its staple mark, of what it has now (0.1.0 stock, duplicated or imported
+ * merchants, items made before this module saw them), and identify anything unidentified. */
+async function markStaples(shops) {
+  for (const shop of shops) {
+    const updates = [];
+    for (const i of shop.items) {
+      const u = {};
+      if (sellable(i) && !i.flags?.[MOD]?.stock) u[`flags.${MOD}.stock`] = { kind: "staple", qty: quantityOf(i) };
+      // Shops sell identified goods.
+      if (i.system?.identification?.status && i.system.identification.status !== "identified") u["system.identification.status"] = "identified";
+      if (Object.keys(u).length) updates.push({ _id: i.id, ...u });
+    }
+    if (updates.length) await shop.updateEmbeddedDocuments("Item", updates, { pmkInternal: true });
+  }
+}
+
+/** Timed restocks: on the primary GM's lead tab, a market whose interval has passed in game time restocks all its shops
+ * once (however much time passed). A market that has never restocked starts its clock at the first check. */
+let restocking = false;
+async function checkSchedules() {
+  if (restocking || !iAmLeader()) return;
+  restocking = true;
+  try {
+    const now = game.time.worldTime;
+    for (const m of store().markets) {
+      if (!(m.restockEvery > 0)) continue;
+      // Never restocked, or the clock was turned back: the interval counts from now.
+      if (m.lastRestock === null || now < m.lastRestock) await mutateMarket(m.id, (x) => (x.lastRestock = now));
+      else if (restockDue(m.restockEvery, m.lastRestock, now)) {
+        const n = await restockMarket(m, { draw: true, keepSold: false });
+        ui.notifications.info(esc(`Marketplace: ${m.name} restocked (${n} ${n === 1 ? "shop" : "shops"}).`));
+      }
+    }
+  } catch (err) {
+    console.error(`${MOD} | a timed restock failed`, err);
+  } finally {
+    restocking = false;
+  }
+}
+
+/** The rows of the rotating stock lines in the settings dialog. */
+const filterOptions = (sel) => STOCK_FILTERS.map((f) => `<option value="${f.id}" ${f.id === sel ? "selected" : ""}>${esc(f.label)}</option>`).join("");
+const amountOptions = (sel) => {
+  const sizes = AMOUNTS.map((a) => `<option value="${a}" ${a === sel ? "selected" : ""}>${AMOUNT_LABEL[a]} (${esc(game.settings.get(MOD, `amount-${a}`))})</option>`);
+  const nums = [...new Set([...Array.from({ length: 20 }, (_, i) => i + 1), ...(typeof sel === "number" ? [sel] : [])])].sort((a, b) => a - b)
+    .map((n) => `<option value="${n}" ${n === sel ? "selected" : ""}>${n}</option>`);
+  return sizes.join("") + nums.join("");
+};
+const RARITY_LINE = { common: "Common", uncommon: "Up to uncommon", rare: "Up to rare" };
+const rarityOptions = (sel) => LINE_RARITIES.map((r) => `<option value="${r}" ${r === sel ? "selected" : ""}>${RARITY_LINE[r]}</option>`).join("");
+const stockLineHTML = (l = { filter: "weapons", amount: "some", rarity: "common" }) => `<div class="pmk-sline">
+  <select name="amount">${amountOptions(l.amount)}</select>
+  <select name="filter">${filterOptions(l.filter)}</select>
+  <select name="rarity">${rarityOptions(l.rarity)}</select>
+  <button type="button" class="pmk-sline-x" data-tooltip="Remove"><i class="fa-solid fa-xmark"></i></button>
+</div>`;
+
 async function shopSettingsDialog(shop, market) {
   const c = shopConf(shop);
   const keeper = c.keeper ? game.actors.get(c.keeper) : null;
@@ -1758,14 +2140,32 @@ async function shopSettingsDialog(shop, market) {
       <label>Pays for items (% of their price) <input type="number" name="itemRate" value="${c.itemRate}" min="0" max="1000" step="5"></label>
       <label>Pays for treasure (% of its value) <input type="number" name="treasureRate" value="${c.treasureRate}" min="0" max="1000" step="5"></label>
       <label class="pmk-check"><input type="checkbox" name="unlimited" ${c.unlimited ? "checked" : ""}> Unlimited purse (never runs out of money)</label>
+      <label>Keeps what players sold for (restocks) <input type="number" name="keepSold" value="${c.keepSold}" min="1" max="9" step="1"></label>
       <label>Shopkeeper's attitude <select name="attitude">${opts}</select></label>
       <p class="pmk-hint">${keeper ? `Shopkeeper: <strong>${esc(keeper.name)}</strong>. ` : "No shopkeeper: drag an NPC onto the shop to set one. "}${att && keeper ? "Their attitude in NPC Attitudes counts first (toward each character, if set). If the party is shown a different attitude than the real one, prices are normal. This one is used when they have no attitude there." : "Attitude changes what players pay (the module settings say by how much)."}</p>
       ${keeper ? `<label class="pmk-check"><input type="checkbox" name="clearKeeper"> No shopkeeper</label>` : ""}
+      <div class="pmk-field">Rotating stock (drawn up to the shop's level)
+        <div class="pmk-slines">${c.lines.map(stockLineHTML).join("")}</div>
+        <button type="button" class="pmk-sline-add"><i class="fa-solid fa-plus"></i> Line</button>
+      </div>
     </div>`,
+    render: (event, dialog) => {
+      const root = dialog.element ?? event?.target?.element;
+      const list = root?.querySelector(".pmk-slines");
+      root?.querySelector(".pmk-sline-add")?.addEventListener("click", () => {
+        if (list.children.length >= MAX_STOCK_LINES) return;
+        list.insertAdjacentHTML("beforeend", stockLineHTML());
+      });
+      list?.addEventListener("click", (ev) => ev.target.closest(".pmk-sline-x")?.closest(".pmk-sline")?.remove());
+    },
     buttons: [
       { action: "ok", label: "Save", icon: "fa-solid fa-check", default: true, callback: (event, button) => {
         const e = button.form.elements;
-        return { level: Number(e.level.value) || 0, buys: e.buys.checked, itemRate: Number(e.itemRate.value), treasureRate: Number(e.treasureRate.value), unlimited: e.unlimited.checked, attitude: e.attitude.value, clearKeeper: !!e.clearKeeper?.checked };
+        return { level: Number(e.level.value) || 0, buys: e.buys.checked, itemRate: Number(e.itemRate.value), treasureRate: Number(e.treasureRate.value), unlimited: e.unlimited.checked, keepSold: Number(e.keepSold.value), attitude: e.attitude.value, clearKeeper: !!e.clearKeeper?.checked,
+          lines: [...button.form.querySelectorAll(".pmk-sline")].map((row) => {
+            const a = row.querySelector('[name="amount"]').value;
+            return { amount: AMOUNTS.includes(a) ? a : Number(a), filter: row.querySelector('[name="filter"]').value, rarity: row.querySelector('[name="rarity"]').value };
+          }) };
       } },
       { action: "cancel", label: "Cancel" },
     ],
@@ -1788,6 +2188,7 @@ async function marketDialog(market) {
       <label>Name <input type="text" name="name" value="${esc(m.name)}" placeholder="Harbor Market" autofocus></label>
       <label>Picture <span class="pmk-pick"><input type="text" name="img" value="${esc(m.img)}" placeholder="A banner or map of the market"><button type="button" class="pmk-browse" data-tooltip="Browse"><i class="fa-solid fa-file-image"></i></button></span></label>
       <label>Level <input type="number" name="level" value="${m.level ?? ""}" min="-1" max="30" step="1" placeholder="none"></label>
+      <label>Restock every (days of game time) <input type="number" name="restockEvery" value="${m.restockEvery || ""}" min="0" max="365" step="1" placeholder="never"></label>
       <label>Merchant folder <select name="folder">
         <option value="">(none: add shops by hand)</option>
         <option value="_new" ${m.folder === "_new" ? "selected" : ""}>A new folder named after the market</option>
@@ -1808,7 +2209,7 @@ async function marketDialog(market) {
       { action: "ok", label: market ? "Save" : "Make it", icon: "fa-solid fa-check", default: true, callback: (event, button) => {
         const e = button.form.elements;
         const level = e.level.value === "" ? null : Number(e.level.value);
-        return { name: e.name.value.trim().slice(0, 120) || "Market", img: e.img.value.trim(), level, folder: e.folder.value || null, description: e.description.value ?? "" };
+        return { name: e.name.value.trim().slice(0, 120) || "Market", img: e.img.value.trim(), level, folder: e.folder.value || null, description: e.description.value ?? "", restockEvery: Number(e.restockEvery.value) || 0 };
       } },
       { action: "cancel", label: "Cancel" },
     ],
@@ -1852,6 +2253,18 @@ Hooks.once("init", () => {
     scope: "client", config: true, type: String, default: "red",
     choices: { red: "Red", green: "Green", blue: "Blue", purple: "Purple", brown: "Brown", black: "Black" },
     onChange: () => refresh(),
+  });
+  for (const a of AMOUNTS) {
+    game.settings.register(MOD, `amount-${a}`, {
+      name: `Stock line size: ${AMOUNT_LABEL[a]}`,
+      hint: a === "few" ? "How many items a rotating stock line of this size draws, as a range (\"1-3\") or one number." : "",
+      scope: "world", config: true, type: String, default: AMOUNT_DEFAULTS[a], onChange: () => refresh(),
+    });
+  }
+  game.settings.register(MOD, "stackRange", {
+    name: "Drawn consumables per stack",
+    hint: "How many of each consumable, bomb or ammunition a draw gives a shop, as a range (\"1-4\"), in batches (10 arrows).",
+    scope: "world", config: true, type: String, default: "1-4", onChange: () => refresh(),
   });
   game.settings.register(MOD, "purseScale", {
     name: "Shop purse size (%)",
@@ -1905,8 +2318,34 @@ for (const hook of ["createActor", "updateActor", "deleteActor"]) Hooks.on(hook,
 // Shops' stock, and the money and goods of anyone this user buys for (the cart shows what they have).
 const watched = (a) => lootActor(a) || ((a?.type === "character" || a?.type === "party") && a.isOwner);
 for (const hook of ["createItem", "updateItem", "deleteItem"]) Hooks.on(hook, (item) => watched(item.parent) && refresh());
+// Anything put in a merchant without a stock mark (the GM dragging it in, or PF2e's own sheet) is a staple that comes back
+// to its quantity on a restock, a design decision. Set on the creating client, before the item exists.
+Hooks.on("preCreateItem", (item, data) => {
+  if (!isMerchant(item.parent)) return;
+  // Shops sell identified goods: an unidentified item put in a shop is identified there.
+  if (data?.system?.identification?.status && data.system.identification.status !== "identified") item.updateSource({ "system.identification.status": "identified" });
+  if (data?.flags?.[MOD]?.stock || !sellable(item)) return;
+  item.updateSource({ [`flags.${MOD}.stock`]: { kind: "staple", qty: Math.max(0, Number(data?.system?.quantity ?? item.quantity ?? 1) || 0) } });
+});
 // A shopkeeper's attitude changing (PF2e NPC Attitudes) changes prices.
 Hooks.on("updateActor", (a, change) => a?.type === "npc" && change?.flags?.["pf2e-npc-attitudes"] && refresh());
 // Players logging in or out changes whether a GM is there to trade with.
 Hooks.on("userConnected", () => refresh());
+Hooks.on("updateWorldTime", () => checkSchedules());
+Hooks.once("ready", () => setTimeout(async () => {
+  // 0.1.0 stock and merchants made elsewhere: every unmarked shop item becomes a staple of what it has.
+  if (iAmLeader()) {
+    const shops = [...new Set(store().markets.flatMap((m) => shopsFor(m).map((s) => s.id)))].map((id) => game.actors.get(id)).filter(isMerchant);
+    await markStaples(shops).catch((err) => console.error(`${MOD} | marking staples failed`, err));
+  }
+  checkSchedules();
+}, 5000));
+// More of a staple put in by hand (the system stacks it) raises what it restocks to; the module's own changes say so.
+Hooks.on("preUpdateItem", (item, change, options) => {
+  if (options?.pmkInternal || !game.user.isGM || !isMerchant(item.parent)) return;
+  const q = foundry.utils.getProperty(change, "system.quantity");
+  const st = item.flags?.[MOD]?.stock;
+  if (q === undefined || st?.kind !== "staple" || foundry.utils.hasProperty(change, `flags.${MOD}.stock`)) return;
+  if (Number(q) > (Number(st.qty) || 0)) foundry.utils.setProperty(change, `flags.${MOD}.stock.qty`, Number(q));
+});
 for (const hook of ["createFolder", "updateFolder", "deleteFolder"]) Hooks.on(hook, (f) => f.type === "Actor" && refresh());

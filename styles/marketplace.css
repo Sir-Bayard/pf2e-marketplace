@@ -412,3 +412,20 @@
   .pmk .pmk-crow img { grid-row: 1 / span 2; }
   .pmk .pmk-tally { font-size: 12px; }
 }
+
+/* The GM's stock marks (0.2) */
+.pmk .pmk-kind { display: inline-block; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 5px; border-radius: 3px; margin-left: 4px; vertical-align: 1px; cursor: pointer; border: 1px solid var(--pmk-line); color: var(--pmk-dim); }
+.pmk .pmk-kind:hover { color: var(--pmk-ink); text-shadow: none; }
+.pmk .pmk-kind-staple { color: var(--pmk-gold); }
+.pmk .pmk-kind-sold { border-style: dashed; }
+
+/* Drawing stock (0.2) */
+.pmk-dialog .pmk-slines { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
+.pmk-dialog .pmk-sline { display: grid; grid-template-columns: 56px 1fr auto 28px; gap: 6px; align-items: center; }
+.pmk-dialog .pmk-sline .pmk-check { display: flex; flex-direction: row; align-items: center; gap: 4px; white-space: nowrap; }
+.pmk-dialog .pmk-sline-x { height: 26px; }
+.pmk-dialog .pmk-sline-add { align-self: flex-start; width: auto; padding: 0 10px; }
+.pmk-dialog .pmk-drawn { width: 100%; border-collapse: collapse; font-size: 13px; }
+.pmk-dialog .pmk-drawn th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; }
+.pmk-dialog .pmk-drawn td, .pmk-dialog .pmk-drawn th { padding: 3px 6px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
+.pmk-dialog .pmk-r { text-align: right; white-space: nowrap; }
