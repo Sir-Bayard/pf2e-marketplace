@@ -6,8 +6,8 @@
  */
 
 import {
-  esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTrade, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, listOf,
-  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, adjust, offerFor, sellRate, cleanSellLines, addLogEntry, cleanLogEntry, handPricedNote,
+  esc, cleanStore, cleanMarket, byMarketOrder, canSee, canTradeShop, MAX_LINES, shopsOf, formatCp, priceFor, groupStock, cleanLines, addToCart, takeFromCart, listOf,
+  purseFor, ATTITUDES, ATTITUDE_LABEL, PRICE_DEFAULTS, cleanShop, attitudePct, pctFor, adjust, planTrade, offerFor, sellRate, cleanSales, addSale, takeSale, settle, addLogEntry, cleanLogEntry, handPricedNote,
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
@@ -194,17 +194,18 @@ const mutateMarket = (id, fn) => mutate((d) => {
 
 /** Actors as plain rows for the shop lists. */
 const actorRows = () => game.actors.filter((a) => a.type === "loot").map((a) => ({
-  id: a.id, name: a.name, folder: a.folder?.id ?? null, merchant: isMerchant(a), hidden: !!a.getFlag?.(MOD, "hidden") || !!a.flags?.[MOD]?.hidden,
+  id: a.id, name: a.name, folder: a.folder?.id ?? null, merchant: isMerchant(a), hidden: !!a.flags?.[MOD]?.hidden, closed: !!a.flags?.[MOD]?.closed,
 }));
 const parentOf = (id) => game.folders.get(id)?.folder?.id ?? null;
 const shopsFor = (market) => shopsOf(market, actorRows(), parentOf, game.user.isGM);
 
-/** A market where this user may trade with this shop (null if none): it must be open, and the shop not hidden from
- * them. GMs can trade anywhere. */
-function tradeMarketFor(shopId, user) {
-  const rows = actorRows();
-  return store().markets.find((m) => canTrade(m, user.isGM) && shopsOf(m, rows, parentOf, user.isGM).some((s) => s.id === shopId)) ?? null;
+/** A market where this user may trade with this shop (null if none): the market must be open, and the shop neither
+ * hidden from them nor closed. GMs can trade anywhere. */
+function tradeMarketFor(shopId, user, rows = actorRows()) {
+  return store().markets.find((m) => shopsOf(m, rows, parentOf, user.isGM).some((s) => s.id === shopId && canTradeShop(m, s, user.isGM))) ?? null;
 }
+/** A shop's own switches, as a row for canTradeShop. */
+const shopRow = (actor) => ({ id: actor?.id, hidden: !!actor?.flags?.[MOD]?.hidden, closed: !!actor?.flags?.[MOD]?.closed });
 
 /* ------------------------------------------------------------------ */
 /* Shops: settings, attitude, purse, log                              */
@@ -280,19 +281,24 @@ function logTrade(entry) {
 /* The cart (per user, in this browser)                               */
 /* ------------------------------------------------------------------ */
 
+/* The cart holds what the user is buying (`lines`: { shop, item, qty }) and what they're selling (`sales`: { actor,
+ * shop, item, qty }, the trader's own items). Sales belong to one character: only the chosen trader's count. */
+let memoryCart = null;
 function loadCart() {
   try {
     const v = JSON.parse(localStorage.getItem(storeKey("cart"))) ?? {};
-    return { lines: cleanLines(v.lines), buyer: typeof v.buyer === "string" ? v.buyer : null };
+    return { lines: cleanLines(v.lines), sales: cleanSales(v.sales), buyer: typeof v.buyer === "string" ? v.buyer : null };
   } catch {
-    return { lines: [], buyer: null };
+    return memoryCart ? structuredClone(memoryCart) : { lines: [], sales: [], buyer: null };
   }
 }
 function saveCart(cart) {
+  const v = { lines: cleanLines(cart.lines), sales: cleanSales(cart.sales), buyer: cart.buyer };
   try {
-    localStorage.setItem(storeKey("cart"), JSON.stringify({ lines: cleanLines(cart.lines), buyer: cart.buyer }));
+    localStorage.setItem(storeKey("cart"), JSON.stringify(v));
   } catch {
     /* no storage: the cart lasts until reload */
+    memoryCart = v;
   }
 }
 
@@ -304,14 +310,15 @@ function buyerChoices(cart) {
 }
 
 /** What each cart line is now: its shop, item, price for this buyer and anything wrong with it. */
-function cartState(lines, buyer) {
+function cartState(lines, buyer, rows = actorRows()) {
   return lines.map((l) => {
     const shop = game.actors.get(l.shop);
     const item = isMerchant(shop) ? shop.items.get(l.item) : null;
     const stock = item ? quantityOf(item) : 0;
     const { cp, per } = item ? priceOf(item) : { cp: 0, per: 1 };
-    const market = shop ? tradeMarketFor(shop.id, game.user) : null;
-    const pct = shop ? pricePct(shop, buyer) : 0;
+    const market = shop ? tradeMarketFor(shop.id, game.user, rows) : null;
+    const raw = shop ? pricePct(shop, buyer) : 0;
+    const pct = raw === null ? null : pctFor(raw, isTreasure(item));
     let problem = null;
     if (!shop || !isMerchant(shop)) problem = "This shop is gone.";
     else if (!item || !sellable(item)) problem = "No longer for sale.";
@@ -321,6 +328,50 @@ function cartState(lines, buyer) {
     return { ...l, shopDoc: shop, itemDoc: item, stock, cp, per, pct: pct ?? 0, price: adjust(priceFor(cp, per, l.qty), pct ?? 0), market, problem };
   });
 }
+
+/** The chosen trader's sales in the cart. */
+const salesOf = (cart, trader) => (trader ? cart.sales.filter((l) => l.actor === trader.id) : []);
+
+/** What each sale line is now: the shop, the trader's item, the offer, and anything wrong with it. */
+function saleState(sales, trader, actors = actorRows()) {
+  const rows = new Map(sellRows(trader).map((r) => [r.id, r]));
+  return sales.map((l) => {
+    const shop = game.actors.get(l.shop);
+    const row = rows.get(l.item) ?? null;
+    const conf = shopConf(shop);
+    const market = shop ? tradeMarketFor(shop.id, game.user, actors) : null;
+    const pct = shop ? pricePct(shop, trader) : 0;
+    const offer = row ? offerFor(row.cp, row.per, Math.min(l.qty, row.qty), sellRate(conf, row.treasure, pctFor(pct ?? 0, row.treasure))) : 0;
+    let problem = null;
+    if (!shop || !isMerchant(shop)) problem = "This shop is gone.";
+    else if (!row) problem = `${trader?.name ?? "You"} no longer has it.`;
+    else if (row.why) problem = row.why;
+    else if (!market) problem = "This shop isn't open for trade right now.";
+    else if (!conf.buys) problem = `${shop.name} doesn't buy from customers.`;
+    else if (pct === null) problem = `${shopFace(shop)} won't trade with ${trader?.name ?? "you"}.`;
+    else if (row.qty < l.qty) problem = `${trader.name} has only ${row.qty}.`;
+    return { ...l, shopDoc: shop, row, conf, offer, market, problem };
+  });
+}
+
+/** The whole cart for the chosen trader: buys, sales, how it settles, and per shop any purse that can't cover it. */
+function tradeState(cart, trader) {
+  const rows = actorRows();
+  const buys = cartState(cart.lines, trader, rows);
+  const sales = saleState(salesOf(cart, trader), trader, rows);
+  const s = settle(buys, sales);
+  const plan = planTrade(s, shopInfo(s.shops.keys()));
+  const short = new Map(plan.short.map((id) => {
+    const shop = game.actors.get(id);
+    return [id, `${shop?.name ?? "The shop"} ${canPay(shop)}, and would owe ${formatCp(-s.shops.get(id))}.`];
+  }));
+  return { buys, sales, ...s, short, empty: !buys.length && !sales.length };
+}
+/** Each shop's purse, for planTrade. */
+const shopInfo = (ids) => new Map([...ids].map((id) => {
+  const shop = game.actors.get(id);
+  return [id, { unlimited: !!shop && shopConf(shop).unlimited, funds: shop ? fundsCp(shop) : 0 }];
+}));
 
 /* ------------------------------------------------------------------ */
 /* Trading through the GM's client                                    */
@@ -360,8 +411,11 @@ function askGM(msg) {
   const rid = foundry.utils.randomID(16);
   pending.set(rid, { kind: msg.type, timer: setTimeout(() => {
     pending.delete(rid);
-    late.set(rid, msg.type);
-    setTimeout(() => late.delete(rid), 600000);
+    late.set(rid, { kind: msg.type, t: Date.now() });
+    setTimeout(() => {
+      late.delete(rid);
+      refresh();
+    }, 600000);
     ui.notifications.warn("Marketplace: the GM's client hasn't answered yet. Check your inventory before trying again.");
     refresh();
   }, 30000) });
@@ -435,24 +489,27 @@ async function takeAll(plan, changed) {
 async function putBack(taken) {
   for (const t of taken.reverse()) {
     const data = foundry.utils.deepClone(t.snap);
-    delete data._id;
     data.system.quantity = t.qty;
-    await giveItems(t.actor, [data]).catch((err) => console.error(`${MOD} | couldn't put ${t.qty} ${data.name} back on ${t.actor.name}`, err));
+    const left = t.actor.items.get(data._id);
+    // What's left of the stack takes it back; a stack taken whole comes back with its own id, so carts still find it.
+    const put = left ? left.update({ "system.quantity": quantityOf(left) + t.qty }) : t.actor.createEmbeddedDocuments("Item", [data], { keepId: true });
+    await put.catch((err) => console.error(`${MOD} | couldn't put ${t.qty} ${data.name} back on ${t.actor.name}`, err));
   }
 }
 
 /**
- * Buy a cart (on the GM's client, or a GM's own). Everything is checked before anything moves: the buyer is the
- * sender's to buy for, each shop is open to them, each item is for sale in that quantity, the total matches what the
- * buyer saw, and the buyer can pay. Then the stock comes out, the buyer pays, gets the items, and each shop is paid.
+ * Make a trade (on the GM's client, or a GM's own): the trader buys `lines` and sells `sales`. Everything is checked
+ * before anything moves: the trader is the sender's, each shop is open to them (and buys from customers, for a sale),
+ * each item is there in that quantity, the totals match what the trader saw, and the money is there. Sales settle with
+ * purchases, so at each shop only the difference changes hands, and the trader pays (or gets) only the difference.
  */
-async function processBuy(msg, sender) {
+async function processTrade(msg, sender) {
   const lines = cleanLines(msg.lines);
-  if (!lines.length) throw new Refused("the cart is empty.");
-  const buyer = game.actors.get(String(msg.buyer ?? ""));
-  if (!buyer || !buyersFor(sender, [buyer]).length) throw new Refused("you can't buy for that character.");
-  const plan = [];
-  let total = 0;
+  const trader = game.actors.get(String(msg.trader ?? ""));
+  if (!trader || !buyersFor(sender, [trader]).length) throw new Refused("you can't trade for that character.");
+  const sales = cleanSales(msg.sales).filter((l) => l.actor === trader.id);
+  if (!lines.length && !sales.length) throw new Refused("the cart is empty.");
+  const buys = [];
   for (const l of lines) {
     const shop = game.actors.get(l.shop);
     if (!isMerchant(shop)) throw new Refused("a shop in the cart is gone.");
@@ -460,111 +517,161 @@ async function processBuy(msg, sender) {
     const item = shop.items.get(l.item);
     if (!item || !sellable(item)) throw new Refused(`something in the cart from ${shop.name} isn't for sale any more.`);
     if (l.qty > quantityOf(item)) throw new Refused(`${shop.name} has only ${quantityOf(item)} of ${realItem(item).name}.`);
-    const pct = pricePct(shop, buyer);
-    if (pct === null) throw new Refused(`${shopFace(shop, sender)} won't trade with ${buyer.name}.`);
+    const pct = pricePct(shop, trader);
+    if (pct === null) throw new Refused(`${shopFace(shop, sender)} won't trade with ${trader.name}.`);
     const { cp, per } = priceOf(item);
-    const price = adjust(priceFor(cp, per, l.qty), pct);
-    plan.push({ shop, item, qty: l.qty, price, name: realItem(item).name });
-    total += price;
+    buys.push({ shop: shop.id, shopDoc: shop, item, qty: l.qty, price: adjust(priceFor(cp, per, l.qty), pctFor(pct, isTreasure(item))), name: realItem(item).name });
   }
-  if (Number(msg.total) !== total) throw new Refused("prices or stock changed since you looked. Check the cart and try again.");
-  if (fundsCp(buyer) < total) throw new Refused(`${buyer.name} hasn't enough money: it costs ${formatCp(total)}.`);
-  // The copies are made before the stock changes. Then: stock first (GM-owned, easy to put back), then the money,
-  // then the goods; a step that fails undoes the ones before it.
-  const copies = plan.map((p) => boughtCopy(p.item, p.qty));
-  const taken = await takeAll(plan, "the shop's stock changed. Check the cart and try again.");
-  if (!(await pay(buyer, total).catch(() => false))) {
-    await putBack(taken);
-    throw new Refused(`${buyer.name} hasn't enough money: it costs ${formatCp(total)}.`);
-  }
-  try {
-    await giveItems(buyer, copies);
-  } catch (err) {
-    await receive(buyer, total).catch(() => null);
-    await putBack(taken);
-    throw err;
-  }
-  const byShop = new Map();
-  for (const p of plan) byShop.set(p.shop.id, [...(byShop.get(p.shop.id) ?? []), p]);
-  for (const group of byShop.values()) {
-    const shop = group[0].shop;
-    const paid = group.reduce((n, p) => n + p.price, 0);
-    await receive(shop, paid).catch((err) => console.error(`${MOD} | ${shop.name} wasn't paid ${paid} cp`, err));
-    logTrade({ kind: "buy", user: sender.name, actor: buyer.name, shop: shop.name, market: tradeMarketFor(shop.id, sender)?.name ?? "", items: group.map((p) => ({ name: p.name, qty: p.qty })), cp: paid });
-  }
-  return { buyer: buyer.name, total, names: plan.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name)), lines };
-}
-
-/**
- * Sell to a shop (on the GM's client, or a GM's own). Checked first: the seller is the sender's, the shop is open to
- * them and buys from players, each item is the seller's, identified and in that quantity, the total matches what the
- * seller saw, and the shop can pay. Then the shop pays (unless its purse is unlimited), the seller gets the coins,
- * the items go into the shop's stock as sold items, and come out of the seller's inventory.
- */
-async function processSell(msg, sender) {
-  const lines = cleanSellLines(msg.lines);
-  if (!lines.length) throw new Refused("nothing to sell.");
-  const seller = game.actors.get(String(msg.seller ?? ""));
-  if (!seller || !buyersFor(sender, [seller]).length) throw new Refused("you can't sell for that character.");
-  const shop = game.actors.get(String(msg.shop ?? ""));
-  if (!isMerchant(shop)) throw new Refused("that shop is gone.");
-  const market = tradeMarketFor(shop.id, sender);
-  if (!market) throw new Refused(`${shop.name} isn't open for trade.`);
-  const conf = shopConf(shop);
-  if (!conf.buys) throw new Refused(`${shop.name} doesn't buy from customers.`);
-  const pct = pricePct(shop, seller);
-  if (pct === null) throw new Refused(`${shopFace(shop, sender)} won't trade with ${seller.name}.`);
-  const plan = [];
-  let total = 0;
-  for (const l of lines) {
-    const item = seller.items.get(l.item);
+  const sold = [];
+  for (const l of sales) {
+    const shop = game.actors.get(l.shop);
+    if (!isMerchant(shop)) throw new Refused("a shop in the cart is gone.");
+    if (!tradeMarketFor(shop.id, sender)) throw new Refused(`${shop.name} isn't open for trade.`);
+    const conf = shopConf(shop);
+    if (!conf.buys) throw new Refused(`${shop.name} doesn't buy from customers.`);
+    const pct = pricePct(shop, trader);
+    if (pct === null) throw new Refused(`${shopFace(shop, sender)} won't trade with ${trader.name}.`);
+    const item = trader.items.get(l.item);
     if (!item) throw new Refused("something you offered isn't in your inventory any more.");
     if (item.isIdentified === false) throw new Refused("identify it before you sell it.");
     if (!canSellToShop(item)) throw new Refused(`${shop.name} won't buy ${item.name} as it is.`);
-    if (l.qty > quantityOf(item)) throw new Refused(`${seller.name} has only ${quantityOf(item)} of ${item.name}.`);
+    if (l.qty > quantityOf(item)) throw new Refused(`${trader.name} has only ${quantityOf(item)} of ${item.name}.`);
     const { cp, per } = priceOf(item);
-    const offer = offerFor(cp, per, l.qty, sellRate(conf, isTreasure(item), pct));
-    plan.push({ item, qty: l.qty, offer, name: item.name });
-    total += offer;
+    sold.push({ shop: shop.id, shopDoc: shop, conf, item, qty: l.qty, offer: offerFor(cp, per, l.qty, sellRate(conf, isTreasure(item), pctFor(pct, isTreasure(item)))), name: item.name });
   }
-  if (Number(msg.total) !== total) throw new Refused("the offer changed since you looked. Check it and try again.");
-  if (!conf.unlimited && fundsCp(shop) < total) throw new Refused(`${shop.name} ${canPay(shop)}.`);
-  // A price set by hand on the seller's item (or homebrew with no compendium entry) is flagged for the GM, not refused.
-  const notes = [];
-  for (const p of plan) {
-    const h = await handPriced(p.item);
-    if (h) notes.push(handPricedNote(p.name, h));
+  const s = settle(buys, sold);
+  if (Number(msg.buy) !== s.buy || Number(msg.sell) !== s.sell) throw new Refused("prices, offers or stock changed since you looked. Check the cart and try again.");
+  if (s.net > 0 && fundsCp(trader) < s.net) throw new Refused(`${trader.name} hasn't enough money: the trade costs ${formatCp(s.net)}.`);
+  const shopDoc = (id) => buys.find((b) => b.shop === id)?.shopDoc ?? sold.find((x) => x.shop === id)?.shopDoc;
+  const plan = planTrade(s, shopInfo(s.shops.keys()));
+  for (const id of plan.short) throw new Refused(`${shopDoc(id).name} ${canPay(shopDoc(id))}.`);
+  // A price set by hand on the trader's item (or homebrew with no compendium entry) is flagged for the GM, not refused.
+  const notes = new Map();
+  for (const x of sold) {
+    const h = await handPriced(x.item);
+    if (h) notes.set(x.shop, [...(notes.get(x.shop) ?? []), handPricedNote(x.name, h)]);
   }
-  const note = notes.join("; ");
-  // The items leave the seller first (checked again against what they have now), then the shop pays, then takes them,
-  // then the seller is paid; a step that fails undoes the ones before it.
-  const copies = plan.map((p) => soldCopy(p.item, p.qty, MOD));
-  const taken = await takeAll(plan, "what you offered changed. Check it and try again.");
-  if (!conf.unlimited && !(await pay(shop, total).catch(() => false))) {
-    await putBack(taken);
-    throw new Refused(`${shop.name} ${canPay(shop)}.`);
-  }
+
+  // The copies are made before anything changes. Then: the shops' stock and the trader's goods come out (checked again
+  // against what's there now), the shops that owe pay, the trader pays, the trader gets what they bought, the shops get
+  // what they bought. A step that fails undoes the ones before it, deliveries included. After that the trade stands;
+  // the money still to go in is paid, and a payment that fails is noted for the GM rather than undoing the trade.
+  const boughtCopies = buys.map((b) => boughtCopy(b.item, b.qty));
+  const soldCopies = sold.map((x) => ({ shop: x.shopDoc, data: soldCopy(x.item, x.qty, MOD) }));
+  const changed = "the stock or your inventory changed. Check the cart and try again.";
+  const taken = await takeAll(buys, changed);
   try {
-    await giveItems(shop, copies);
+    taken.push(...(await takeAll(sold, changed)));
   } catch (err) {
-    if (!conf.unlimited) await receive(shop, total).catch(() => null);
     await putBack(taken);
     throw err;
   }
-  await receive(seller, total);
-  logTrade({ kind: "sell", user: sender.name, actor: seller.name, shop: shop.name, market: market.name, items: plan.map((p) => ({ name: p.name, qty: p.qty })), cp: total, note });
-  return { seller: seller.name, shop: shop.name, total, names: plan.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name)), note };
+  const paid = [];
+  const delivered = [];
+  const undo = async () => {
+    for (const d of delivered.reverse()) await undeliver(d);
+    for (const [actor, n] of paid.reverse()) await receive(actor, n).catch((e) => console.error(`${MOD} | couldn't give ${actor.name} back ${n} cp`, e));
+    await putBack(taken);
+  };
+  for (const [id, n] of plan.owing) {
+    const shop = shopDoc(id);
+    if (!(await pay(shop, n).catch(() => false))) {
+      await undo();
+      throw new Refused(`${shop.name} ${canPay(shop)}.`);
+    }
+    paid.push([shop, n]);
+  }
+  if (s.net > 0) {
+    if (!(await pay(trader, s.net).catch(() => false))) {
+      await undo();
+      throw new Refused(`${trader.name} hasn't enough money: the trade costs ${formatCp(s.net)}.`);
+    }
+    paid.push([trader, s.net]);
+  }
+  try {
+    delivered.push(await deliver(trader, boughtCopies));
+    for (const c of soldCopies) delivered.push(await deliver(c.shop, [c.data]));
+  } catch (err) {
+    await undo();
+    throw err;
+  }
+  const unpaid = [];
+  for (const [id, n] of plan.receipts) {
+    await receive(shopDoc(id), n).catch((err) => {
+      console.error(`${MOD} | ${shopDoc(id).name} wasn't paid ${n} cp`, err);
+      unpaid.push(`${shopDoc(id).name} wasn't paid ${formatCp(n)}`);
+    });
+  }
+  if (s.net < 0) {
+    await receive(trader, -s.net).catch((err) => {
+      console.error(`${MOD} | ${trader.name} wasn't paid ${-s.net} cp`, err);
+      unpaid.push(`${trader.name} wasn't paid ${formatCp(-s.net)}`);
+    });
+  }
+
+  // The log keeps purchases and sales apart, one entry each per shop.
+  const market = (id) => tradeMarketFor(id, sender)?.name ?? "";
+  const unpaidNote = unpaid.join("; ");
+  for (const id of new Set([...buys.map((b) => b.shop), ...sold.map((x) => x.shop)])) {
+    const b = buys.filter((x) => x.shop === id), x = sold.filter((y) => y.shop === id);
+    const shop = shopDoc(id);
+    const note = [...(notes.get(id) ?? []), unpaidNote].filter(Boolean).join("; ");
+    if (b.length) logTrade({ kind: "buy", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: b.map((p) => ({ name: p.name, qty: p.qty })), cp: b.reduce((n, p) => n + p.price, 0), note: x.length ? "" : unpaidNote });
+    if (x.length) logTrade({ kind: "sell", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: x.map((p) => ({ name: p.name, qty: p.qty })), cp: x.reduce((n, p) => n + p.offer, 0), note });
+  }
+  const named = (list) => list.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name));
+  return { trader: trader.name, buy: s.buy, sell: s.sell, net: s.net, bought: named(buys), soldNames: named(sold), note: [...notes.values()].flat().join("; "), unpaid: unpaidNote, lines, sales };
 }
-const soldText = (r) => `${r.seller} sold ${listOf(r.names)} to ${r.shop} for ${formatCp(r.total)}.`;
 
-/** What a trade's buyer is told, and what the GM sees when a player bought. */
-const boughtText = (r) => `${r.buyer} bought ${listOf(r.names)} for ${formatCp(r.total)}.`;
+/** Give an actor items, remembering what was there before, so it can be undone. */
+async function deliver(actor, datas) {
+  const before = new Map(actor.items.map((i) => [i.id, quantityOf(i)]));
+  const record = { actor, before };
+  try {
+    await giveItems(actor, datas);
+  } catch (err) {
+    // Part of it may have landed.
+    await undeliver(record);
+    throw err;
+  }
+  return record;
+}
+/** Undo a delivery: items it made are deleted, stacks it added to go back to what they were. */
+async function undeliver({ actor, before }) {
+  try {
+    const made = actor.items.filter((i) => !before.has(i.id)).map((i) => i.id);
+    if (made.length) await actor.deleteEmbeddedDocuments("Item", made);
+    const grown = actor.items.filter((i) => before.has(i.id) && quantityOf(i) > before.get(i.id)).map((i) => ({ _id: i.id, "system.quantity": before.get(i.id) }));
+    if (grown.length) await actor.updateEmbeddedDocuments("Item", grown);
+  } catch (err) {
+    console.error(`${MOD} | couldn't undo items given to ${actor.name}; check its inventory`, err);
+    ui.notifications.error(esc(`Marketplace: a failed trade left items on ${actor.name}. Check its inventory.`), { permanent: true });
+  }
+}
 
-/** What was bought comes out of the cart (a line raised meanwhile keeps the rest). */
-function clearBought(lines) {
+/** What the trader is told, and what the GM sees when a player traded. */
+function tradeText(r) {
+  const parts = [];
+  if (r.bought.length) parts.push(`bought ${listOf(r.bought)} for ${formatCp(r.buy)}`);
+  if (r.soldNames.length) parts.push(`sold ${listOf(r.soldNames)} for ${formatCp(r.sell, "nothing")}`);
+  const money = r.bought.length && r.soldNames.length ? (r.net > 0 ? `, paying ${formatCp(r.net)}` : r.net < 0 ? `, getting ${formatCp(-r.net)}` : ", even") : "";
+  return `${r.trader} ${parts.join(" and ")}${money}.`;
+}
+/** The GM's notice for a trade: a warning when a price or a payment needs checking. */
+function gmNotice(r, who = "") {
+  const text = `Marketplace: ${who}${tradeText(r)}`;
+  const check = [r.note && `Check the price: ${r.note}.`, r.unpaid && `Check the money: ${r.unpaid}.`].filter(Boolean).join(" ");
+  if (check) ui.notifications.warn(esc(`${text} ${check}`), { permanent: true });
+  else ui.notifications.info(esc(text));
+}
+
+/** What was traded comes out of the cart (a line raised meanwhile keeps the rest). */
+function clearTraded(lines, sales) {
   const cart = loadCart();
-  const bought = new Map(lines.map((l) => [`${l.shop}.${l.item}`, l.qty]));
+  const bought = new Map(cleanLines(lines).map((l) => [`${l.shop}.${l.item}`, l.qty]));
   cart.lines = cart.lines.map((l) => ({ ...l, qty: l.qty - (bought.get(`${l.shop}.${l.item}`) ?? 0) })).filter((l) => l.qty >= 1);
+  const sold = new Map(cleanSales(sales).map((l) => [`${l.actor}.${l.item}`, l.qty]));
+  cart.sales = cart.sales.map((l) => ({ ...l, qty: l.qty - (sold.get(`${l.actor}.${l.item}`) ?? 0) })).filter((l) => l.qty >= 1);
   saveCart(cart);
   refresh();
 }
@@ -573,16 +680,10 @@ function clearBought(lines) {
 async function onRequest(msg, sender) {
   const reply = (extra) => game.socket.emit(SOCKET, { users: [sender.id], rid: typeof msg.rid === "string" ? msg.rid : null, ...extra });
   try {
-    if (msg.type === "buy") {
-      const r = await queued(() => processBuy(msg, sender));
-      reply({ type: "done", what: "buy", text: boughtText(r), lines: r.lines });
-      ui.notifications.info(esc(`Marketplace: ${sender.name}: ${boughtText(r)}`));
-    } else if (msg.type === "sell") {
-      const r = await queued(() => processSell(msg, sender));
-      reply({ type: "done", what: "sell", text: soldText(r) });
-      if (r.note) ui.notifications.warn(esc(`Marketplace: ${sender.name}: ${soldText(r)} Check the price: ${r.note}.`), { permanent: true });
-      else ui.notifications.info(esc(`Marketplace: ${sender.name}: ${soldText(r)}`));
-    }
+    if (msg.type !== "trade") return;
+    const r = await queued(() => processTrade(msg, sender));
+    reply({ type: "done", text: tradeText(r) + (r.unpaid ? " Part of the money didn't arrive; the GM has been told." : ""), lines: r.lines, sales: r.sales });
+    gmNotice(r, `${sender.name}: `);
   } catch (err) {
     if (err instanceof Refused) return reply({ type: "fail", text: `Marketplace: ${err.message}` });
     console.error(`${MOD} | a player's trade failed`, err);
@@ -605,8 +706,9 @@ function onSocket(msg, senderId) {
       }
     } else if (msg.type === "gmbye" && sender?.id === game.user.id) gmTabs.delete(msg.client);
     else if (msg.type === "claim" && sender?.isGM && typeof msg.key === "string") handled.set(msg.key, Date.now());
-    else if (sender && !sender.isGM && (msg.type === "buy" || msg.type === "sell")) takeRequest(msg, sender);
-    return;
+    else if (sender && sender.id !== game.user.id && msg.type === "trade") takeRequest(msg, sender);
+    // An assistant GM's own trades go through the primary GM's client too, and come back like a player's.
+    if (msg.type !== "done" && msg.type !== "fail") return;
   }
   if (!sender?.isGM) return;
   if (Array.isArray(msg.users) && !msg.users.includes(game.user.id)) return;
@@ -618,87 +720,55 @@ function onSocket(msg, senderId) {
     ui.notifications.warn(esc(String(msg.text ?? "Marketplace: that didn't work.")));
     return refresh();
   }
-  if (msg.what === "buy") {
-    clearBought(cleanLines(msg.lines));
-    ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "Bought.")}`));
-  } else if (msg.what === "sell") {
-    for (const app of openApps) app.view.sell = new Map();
-    ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "Sold.")}`));
-    refresh();
-  }
+  clearTraded(msg.lines, msg.sales);
+  ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "Done.")}`));
 }
 
-/** Check out: a GM buys at once; a player asks the GM's client. */
-let buying = false;
-async function checkout() {
-  if (buying || waitingFor("buy")) return;
+/** Make the trade in the cart: a GM at once; a player asks the GM's client. */
+let trading = false;
+/** `seen` is { buy, sell } as the Pay button showed them: a cart changed since (a quantity typed a moment ago) isn't
+ * traded until the player has seen the new total. */
+async function checkout(seen = null) {
+  if (busy()) return;
   const cart = loadCart();
   const { chosen } = buyerChoices(cart);
-  const state = cartState(cart.lines, chosen);
-  if (!chosen) return void ui.notifications.warn("Marketplace: you have no character to buy for.");
-  if (!state.length) return;
-  const bad = state.find((l) => l.problem);
+  if (!chosen) return void ui.notifications.warn("Marketplace: you have no character to trade for.");
+  const t = tradeState(cart, chosen);
+  if (t.empty) return;
+  const bad = [...t.buys, ...t.sales].find((l) => l.problem);
   if (bad) return void ui.notifications.warn(esc(`Marketplace: fix the cart first: ${bad.problem}`));
-  const total = state.reduce((n, l) => n + l.price, 0);
-  if (fundsCp(chosen) < total) return void ui.notifications.warn(esc(`Marketplace: ${chosen.name} hasn't enough money.`));
-  const msg = { type: "buy", buyer: chosen.id, lines: cart.lines, total };
-  if (game.user.isGM) {
-    buying = true;
+  if (t.short.size) return void ui.notifications.warn(esc(`Marketplace: ${[...t.short.values()][0]}`));
+  if (t.net > fundsCp(chosen)) return void ui.notifications.warn(esc(`Marketplace: ${chosen.name} hasn't enough money.`));
+  if (seen && (seen.buy !== t.buy || seen.sell !== t.sell)) {
+    refresh();
+    return void ui.notifications.info("Marketplace: the cart changed. Check the new total and trade again.");
+  }
+  const msg = { type: "trade", trader: chosen.id, lines: cart.lines, sales: salesOf(cart, chosen), buy: t.buy, sell: t.sell };
+  // Only the primary GM trades on their own client; an assistant GM's trade goes through it like a player's, in its queue.
+  if (isPrimaryGM()) {
+    trading = true;
+    refresh();
     try {
-      const r = await queued(() => processBuy(msg, game.user));
-      clearBought(r.lines);
-      ui.notifications.info(esc(`Marketplace: ${boughtText(r)}`));
+      const r = await queued(() => processTrade(msg, game.user));
+      clearTraded(r.lines, r.sales);
+      gmNotice(r);
     } catch (err) {
       if (err instanceof Refused) ui.notifications.warn(esc(`Marketplace: ${err.message}`));
       else {
-        console.error(`${MOD} | buying failed`, err);
-        ui.notifications.error("Marketplace: buying failed partway. See the console.");
+        console.error(`${MOD} | the trade failed`, err);
+        ui.notifications.error("Marketplace: the trade failed partway. See the console.");
       }
     } finally {
-      buying = false;
+      trading = false;
       refresh();
     }
     return;
   }
   askGM(msg);
 }
-
-/** Sell what's chosen in a shop's sell list: a GM at once, a player through the GM's client. */
-let selling = false;
-async function sellNow(app, shop, seller) {
-  if (selling || waitingFor("sell") || !shop || !seller) return;
-  const rows = new Map(sellRows(seller).map((r) => [r.id, r]));
-  const conf = shopConf(shop);
-  const pct = pricePct(shop, seller) ?? 0;
-  // The same quantities the tab shows: never more than the seller has now.
-  const lines = cleanSellLines([...app.view.sell].map(([item, qty]) => ({ item, qty: Math.min(qty, rows.get(item)?.qty ?? 0) })))
-    .filter((l) => rows.get(l.item) && !rows.get(l.item).why);
-  if (!lines.length) return void ui.notifications.info("Marketplace: choose how many of something to sell first.");
-  const total = lines.reduce((n, l) => {
-    const r = rows.get(l.item);
-    return n + offerFor(r.cp, r.per, l.qty, sellRate(conf, r.treasure, pct));
-  }, 0);
-  const msg = { type: "sell", seller: seller.id, shop: shop.id, lines, total };
-  if (game.user.isGM) {
-    selling = true;
-    try {
-      const r = await queued(() => processSell(msg, game.user));
-      app.view.sell = new Map();
-      ui.notifications.info(esc(`Marketplace: ${soldText(r)}${r.note ? ` Check the price: ${r.note}.` : ""}`));
-    } catch (err) {
-      if (err instanceof Refused) ui.notifications.warn(esc(`Marketplace: ${err.message}`));
-      else {
-        console.error(`${MOD} | selling failed`, err);
-        ui.notifications.error("Marketplace: selling failed partway. See the console.");
-      }
-    } finally {
-      selling = false;
-      refresh();
-    }
-    return;
-  }
-  askGM(msg);
-}
+/** A trade is under way: this client's own, one still waiting for the GM, or one that timed out less than two minutes
+ * ago (a second click then could be the same trade twice). */
+const busy = () => trading || waitingFor("trade") || [...late.values()].some((l) => l.kind === "trade" && Date.now() - l.t < 120000);
 
 /* ------------------------------------------------------------------ */
 /* The window                                                         */
@@ -744,6 +814,26 @@ function actorFolderOptions(selected) {
 
 const RARITY = { uncommon: "Uncommon", rare: "Rare", unique: "Unique" };
 
+const LOOKS = ["dark", "hybrid", "pf2e"];
+const SHEET_COLORS = ["red", "green", "blue", "purple", "brown", "black"];
+function getLook() {
+  try {
+    const v = localStorage.getItem(storeKey("look"));
+    return LOOKS.includes(v) ? v : "dark";
+  } catch {
+    return "dark";
+  }
+}
+function setLook(app, look) {
+  try {
+    localStorage.setItem(storeKey("look"), look);
+  } catch {
+    /* storage off: the look lasts until the window closes */
+  }
+  app.look = look;
+  app.render();
+}
+
 const Base = rememberWindow(foundry.applications.api.ApplicationV2, `${MOD}.size`);
 
 class MarketApp extends Base {
@@ -752,9 +842,22 @@ class MarketApp extends Base {
     // The window is drawn dark, so Foundry's own inputs and buttons inside it take the dark theme too.
     classes: ["pmk", "themed", "theme-dark"],
     tag: "div",
-    window: { title: "Marketplace", icon: "fa-solid fa-store", resizable: true },
+    window: {
+      title: "Marketplace",
+      icon: "fa-solid fa-store",
+      resizable: true,
+      // Each user picks a look for their own window (kept in this browser).
+      controls: [
+        { icon: "fa-solid fa-moon", label: "Look: Dark", action: "pmkLookDark" },
+        { icon: "fa-solid fa-book-open", label: "Look: Dark and parchment", action: "pmkLookHybrid" },
+        { icon: "fa-solid fa-scroll", label: "Look: Pathfinder sheet", action: "pmkLookPf2e" },
+      ],
+    },
     position: { width: 1000, height: 720 },
     actions: {
+      pmkLookDark: function () { setLook(this, "dark"); },
+      pmkLookPf2e: function () { setLook(this, "pf2e"); },
+      pmkLookHybrid: function () { setLook(this, "hybrid"); },
       pmkMarket: MarketApp.#onMarket,
       pmkShop: MarketApp.#onShop,
       pmkBack: MarketApp.#onBack,
@@ -773,7 +876,9 @@ class MarketApp extends Base {
       pmkCartRemove: MarketApp.#onCartRemove,
       pmkCheckout: MarketApp.#onCheckout,
       pmkTab: MarketApp.#onTab,
-      pmkSell: MarketApp.#onSell,
+      pmkSellAdd: MarketApp.#onSellAdd,
+      pmkStep: MarketApp.#onStep,
+      pmkCloseShop: MarketApp.#onCloseShop,
       pmkFill: MarketApp.#onFill,
       pmkShopSettings: MarketApp.#onShopSettings,
       pmkLog: MarketApp.#onLog,
@@ -784,7 +889,7 @@ class MarketApp extends Base {
   constructor(options = {}) {
     super(options);
     const saved = loadView();
-    this.view = { market: saved.market ?? null, shop: saved.shop ?? null, cart: false, log: false, tab: "buy", query: "", open: new Set(), sell: new Map() };
+    this.view = { market: saved.market ?? null, shop: saved.shop ?? null, cart: false, log: false, tab: "buy", query: "", open: new Set() };
     /** Item descriptions, enriched once per item version. */
     this.descs = new Map();
   }
@@ -820,6 +925,7 @@ class MarketApp extends Base {
     }).join("") || `<p class="pmk-none">${this.isGM ? "No markets yet." : "No markets to visit yet."}</p>`;
 
     const cart = loadCart();
+    const inCart = cart.lines.length + salesOf(cart, buyerChoices(cart).chosen).length;
     let main;
     if (this.view.log && this.isGM) main = this.#logHTML();
     else if (this.view.cart) main = this.#cartHTML(cart);
@@ -827,15 +933,18 @@ class MarketApp extends Base {
     else if (this.view.shop) main = await this.#shopHTML(market, game.actors.get(this.view.shop));
     else main = await this.#marketHTML(market, shops);
 
+    const look = this.look ?? getLook();
+    // Parchment pages: everywhere in the Pathfinder sheet look; markets and shops in the hybrid one.
+    const paper = look === "pf2e" || (look === "hybrid" && market && !this.view.cart && !(this.view.log && this.isGM));
     return `<div class="pmk-shell">
       <nav class="pmk-rail">
         <div class="pmk-railhead">Markets</div>
         <div class="pmk-mks">${rail}</div>
         ${this.isGM ? `<a class="pmk-mk pmk-loglink ${this.view.log ? "active" : ""}" data-action="pmkLog"><i class="fa-solid fa-scroll pmk-noimg"></i><span class="pmk-mkn">Trade log</span></a>` : ""}
-        <a class="pmk-mk pmk-cartlink ${this.view.cart ? "active" : ""}" data-action="pmkCart"><i class="fa-solid fa-cart-shopping pmk-noimg"></i><span class="pmk-mkn">Cart</span>${cart.lines.length ? `<span class="pmk-count">${cart.lines.length}</span>` : ""}</a>
+        <a class="pmk-mk pmk-cartlink ${this.view.cart ? "active" : ""}" data-action="pmkCart"><i class="fa-solid fa-cart-shopping pmk-noimg"></i><span class="pmk-mkn">Cart</span>${inCart ? `<span class="pmk-count">${inCart}</span>` : ""}</a>
         ${this.isGM ? `<button type="button" class="pmk-newmk" data-action="pmkNewMarket"><i class="fa-solid fa-plus"></i> <span>New market</span></button>` : ""}
       </nav>
-      <section class="pmk-main">${main}</section>
+      <section class="pmk-main${paper ? " pmk-paper" : ""}">${main}</section>
     </div>`;
   }
 
@@ -846,14 +955,24 @@ class MarketApp extends Base {
       : `<div class="pmk-empty"><i class="fa-solid fa-store"></i><p>There are no markets to visit yet.</p></div>`;
   }
 
-  /** A line saying what players can do here. */
-  #statusHTML(market) {
+  /** A line saying what players can do here: for a market, or for a shop in it (its own switches count too). */
+  #statusHTML(market, shop = null) {
+    const own = shop ? shopRow(shop) : null;
     if (this.isGM) {
-      const text = !market.visible ? "Hidden from players." : market.open ? "Players can see it and shop here." : "Players can see and browse it, but not trade.";
-      return `<p class="pmk-status ${market.visible && market.open ? "pmk-good" : ""}">${text}</p>`;
+      let text, good = false;
+      if (!market.visible) text = shop ? "Hidden from players (the market is hidden)." : "Hidden from players.";
+      else if (own?.hidden) text = "Hidden from players.";
+      else if (!market.open) text = shop ? "Browse only (the market is closed)." : "Browse only.";
+      else if (own?.closed) text = "Browse only.";
+      else {
+        text = "Open for trade.";
+        good = true;
+      }
+      return `<p class="pmk-status ${good ? "pmk-good" : ""}">${text}</p>`;
     }
-    return market.open ? `<p class="pmk-status pmk-good"><i class="fa-solid fa-store"></i> Open for trade.</p>`
-      : `<p class="pmk-status"><i class="fa-solid fa-store-slash"></i> You can look around, but you can't trade here right now.</p>`;
+    const open = shop ? !!tradeMarketFor(shop.id, game.user) : market.open;
+    return open ? `<p class="pmk-status pmk-good"><i class="fa-solid fa-store"></i> Open for trade.</p>`
+      : `<p class="pmk-status"><i class="fa-solid fa-store-slash"></i> Browse only.</p>`;
   }
 
   async #marketHTML(market, shops) {
@@ -862,7 +981,7 @@ class MarketApp extends Base {
     const sub = [level, `${shops.length} ${shops.length === 1 ? "shop" : "shops"}`].filter(Boolean).join(" · ");
     const gmBar = this.isGM ? `<div class="pmk-gmbar">
         <button type="button" class="pmk-tog ${market.visible ? "on" : ""}" data-action="pmkToggle" data-what="visible" data-tooltip="Players see and browse this market"><i class="fa-solid ${market.visible ? "fa-eye" : "fa-eye-slash"}"></i> Visible</button>
-        <button type="button" class="pmk-tog ${market.open ? "on" : ""}" data-action="pmkToggle" data-what="open" data-tooltip="Players can buy, sell and trade here"><i class="fa-solid ${market.open ? "fa-store" : "fa-store-slash"}"></i> Open</button>
+        <button type="button" class="pmk-tog ${market.open ? "on" : ""}" data-action="pmkToggle" data-what="open" data-tooltip="Players can buy and sell here"><i class="fa-solid ${market.open ? "fa-store" : "fa-store-slash"}"></i> Open</button>
         <span class="pmk-gap"></span>
         <button type="button" data-action="pmkNewShop"><i class="fa-solid fa-plus"></i> New shop</button>
         <button type="button" data-action="pmkEditMarket"><i class="fa-solid fa-pen"></i> Edit</button>
@@ -871,13 +990,13 @@ class MarketApp extends Base {
     const folder = market.folder ? game.folders.get(market.folder) : null;
     const cards = shops.map((s) => {
       const actor = game.actors.get(s.id);
-      const rows = stockRows(actor);
-      const count = rows.length;
-      const marks = this.isGM ? [
-        s.hidden ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : "",
-        s.byHand ? `<a class="pmk-x" data-action="pmkRemoveShop" data-id="${esc(s.id)}" data-tooltip="Take it out of this market (the merchant stays)"><i class="fa-solid fa-xmark"></i></a>` : "",
-      ].join("") : "";
-      return `<a class="pmk-shop" data-action="pmkShop" data-id="${esc(s.id)}">
+      const count = stockRows(actor).length;
+      const marks = [
+        this.isGM && s.hidden ? `<i class="fa-solid fa-eye-slash" data-tooltip="Hidden from players"></i>` : "",
+        s.closed && (this.isGM || market.open) ? `<i class="fa-solid fa-store-slash" data-tooltip="${this.isGM ? "Closed: players can browse but not trade" : "Browse only for now"}"></i>` : "",
+        this.isGM && s.byHand ? `<a class="pmk-x" data-action="pmkRemoveShop" data-id="${esc(s.id)}" data-tooltip="Take it out of this market (the merchant stays)"><i class="fa-solid fa-xmark"></i></a>` : "",
+      ].join("");
+      return `<a class="pmk-shop ${s.closed ? "pmk-closed" : ""}" data-action="pmkShop" data-id="${esc(s.id)}">
         <img src="${esc(actor?.img ?? "")}" alt="">
         <span class="pmk-shopn">${esc(s.name)}</span>
         <span class="pmk-shops">${count} ${count === 1 ? "item" : "items"}${actorLevel(actor) ? ` · level ${actorLevel(actor)}` : ""}</span>
@@ -885,9 +1004,9 @@ class MarketApp extends Base {
       </a>`;
     }).join("");
     const none = this.isGM
-      ? `<p class="pmk-none">No shops yet. Use New shop, put PF2e merchants in ${folder ? `the folder <strong>${esc(folder.name)}</strong>` : "this market's folder (Edit to choose one)"}, or drag merchants here.</p>`
+      ? `<p class="pmk-none">No shops yet. Use New shop, put merchants in ${folder ? `<strong>${esc(folder.name)}</strong>` : "the market's folder"}, or drag them here.</p>`
       : `<p class="pmk-none">No shops here yet.</p>`;
-    const hint = this.isGM && shops.length ? `<p class="pmk-hint">${folder ? `Merchants in <strong>${esc(folder.name)}</strong> are this market's shops.` : "This market has no folder."} Drag a merchant here to add one by hand.</p>` : "";
+    const hint = this.isGM && shops.length ? `<p class="pmk-hint">Drag a merchant here to add it.</p>` : "";
     return `<div class="pmk-market pmk-drop">
       <header class="pmk-mhead">
         ${market.img ? `<img class="pmk-banner" src="${esc(market.img)}" alt="">` : ""}
@@ -902,22 +1021,43 @@ class MarketApp extends Base {
     </div>`;
   }
 
+  /** The running tally of the cart for the trader, with a way to the cart. */
+  #tallyHTML(cart, trader) {
+    if (!trader) return "";
+    const t = tradeState(cart, trader);
+    if (t.empty) return "";
+    const n = (list) => list.reduce((k, l) => k + l.qty, 0);
+    const bits = [];
+    if (t.buys.length) bits.push(`<span>Buying ${n(t.buys)}: <strong>${esc(formatCp(t.buy))}</strong></span>`);
+    if (t.sales.length) bits.push(`<span>Selling ${n(t.sales)}: <strong>${esc(formatCp(t.sell, "nothing"))}</strong></span>`);
+    const net = t.net > 0 ? `${esc(trader.name)} pays <strong>${esc(formatCp(t.net))}</strong>` : t.net < 0 ? `${esc(trader.name)} gets <strong>${esc(formatCp(-t.net))}</strong>` : "Even";
+    const short = t.net > fundsCp(trader);
+    const bad = [...t.buys, ...t.sales].some((l) => l.problem) || t.short.size;
+    return `<div class="pmk-tally ${short || bad ? "pmk-tally-bad" : ""}">
+      ${bits.join(`<span class="pmk-sep">·</span>`)}<span class="pmk-sep">=</span><span class="pmk-net">${net}</span>
+      ${short ? `<span class="pmk-warn">(has ${esc(formatCp(fundsCp(trader), "no money"))})</span>` : bad ? `<span class="pmk-warn"><i class="fa-solid fa-triangle-exclamation"></i> check the cart</span>` : ""}
+      <span class="pmk-gap"></span>
+      <button type="button" data-action="pmkCart"><i class="fa-solid fa-cash-register"></i> Checkout</button>
+    </div>`;
+  }
+
   async #shopHTML(market, actor) {
     if (!actor) return this.#marketHTML(market, shopsFor(market));
     const rows = stockRows(actor);
-    const trade = canTrade(market, this.isGM);
+    const own = shopRow(actor);
+    // Open to this user in any market that holds it (a shop can be in two), as the cart and the GM's client see it.
+    const trade = !!tradeMarketFor(actor.id, game.user);
     const conf = shopConf(actor);
     const cart = loadCart();
     const { list: buyers, chosen } = buyerChoices(cart);
     const pct = pricePct(actor, chosen);
     const keeper = conf.keeper ? game.actors.get(conf.keeper) : null;
     const face = keeperFace(keeper, this.isGM);
-    const tab = this.view.tab === "sell" && trade && conf.buys ? "sell" : "buy";
-    const hidden = !!actor.flags?.[MOD]?.hidden;
+    const tab = this.view.tab === "sell" && trade && conf.buys && pct !== null ? "sell" : "buy";
     const purse = conf.unlimited ? "unlimited" : formatCp(fundsCp(actor), "empty");
     const gmBar = this.isGM ? `<div class="pmk-gmbar">
-        <button type="button" class="pmk-tog ${hidden ? "" : "on"}" data-action="pmkHideShop" data-tooltip="${hidden ? "Hidden from players, even in a visible market" : "Players see this shop when its market is visible"}"><i class="fa-solid ${hidden ? "fa-eye-slash" : "fa-eye"}"></i> ${hidden ? "Hidden" : "Shown"}</button>
-        <span class="pmk-purse" data-tooltip="The merchant's coins: what it can pay for things players sell"><i class="fa-solid fa-sack-dollar"></i> ${esc(purse)}</span>
+        <button type="button" class="pmk-tog ${own.hidden ? "" : "on"}" data-action="pmkHideShop" data-tooltip="${own.hidden ? "Hidden from players, even in a visible market" : "Players see this shop when its market is visible"}"><i class="fa-solid ${own.hidden ? "fa-eye-slash" : "fa-eye"}"></i> ${own.hidden ? "Hidden" : "Shown"}</button>
+        <button type="button" class="pmk-tog ${own.closed ? "" : "on"}" data-action="pmkCloseShop" data-tooltip="${own.closed ? "Closed: players can browse it but not trade, even in an open market" : "Players can trade here when its market is open"}"><i class="fa-solid ${own.closed ? "fa-store-slash" : "fa-store"}"></i> ${own.closed ? "Closed" : "Open"}</button>
         ${conf.unlimited ? "" : `<button type="button" data-action="pmkFill" data-tooltip="Top the purse up to ${esc(formatCp(purseFor(shopLevel(actor, market), game.settings.get(MOD, "purseScale"))))} (level ${shopLevel(actor, market)})"><i class="fa-solid fa-coins"></i> Fill purse</button>`}
         <span class="pmk-gap"></span>
         <button type="button" data-action="pmkShopSettings"><i class="fa-solid fa-sliders"></i> Settings</button>
@@ -928,23 +1068,24 @@ class MarketApp extends Base {
       : `${ATTITUDE_LABEL[info.real] ?? "No attitude"}, shown as ${ATTITUDE_LABEL[info.shown] ?? "Unknown"}: normal prices`;
     const keeperHTML = face ? `<div class="pmk-keeper"><img src="${esc(face.img)}" alt=""><div><strong>${esc(face.name)}</strong>
         ${this.isGM ? `<span class="pmk-dim">${esc(gmAtt)}</span>` : ""}</div></div>`
-      : this.isGM ? `<p class="pmk-hint">Drag an NPC onto this shop to make them its shopkeeper.</p>` : "";
-    const tradingAs = buyers.length ? `<label class="pmk-buyer">Trading as <select name="pmk-buyer">${buyers.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}</option>`).join("")}</select></label>` : "";
+      : this.isGM ? `<p class="pmk-hint">Drop an NPC here for a shopkeeper.</p>` : "";
+    const tradingAs = buyers.length ? `<label class="pmk-buyer">Trading as <select name="pmk-buyer">${buyers.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}: ${esc(formatCp(fundsCp(a), "no money"))}</option>`).join("")}</select></label>` : "";
     const priceLine = !chosen ? "" : pct === null ? `<p class="pmk-status pmk-warnbox">${esc(shopFace(actor))} won't trade with ${esc(chosen.name)}.</p>`
-      : pct ? `<p class="pmk-status ${pct < 0 ? "pmk-good" : ""}">Prices for ${esc(chosen.name)}: ${pct < 0 ? `${-pct}% off` : `${pct}% more`} ${attitudeInfo(actor, chosen).masked ? "" : ` (${esc(ATTITUDE_LABEL[attitudeFor(actor, chosen)])})`}.</p>` : "";
+      : pct ? `<p class="pmk-status ${pct < 0 ? "pmk-good" : ""}">Prices for ${esc(chosen.name)}: ${pct < 0 ? `${-pct}% off` : `${pct}% more`}${attitudeInfo(actor, chosen).masked ? "" : ` (${esc(ATTITUDE_LABEL[attitudeFor(actor, chosen)])})`}.</p>` : "";
     const tabs = trade && conf.buys && pct !== null ? `<nav class="pmk-tabs"><a class="${tab === "buy" ? "active" : ""}" data-action="pmkTab" data-tab="buy"><i class="fa-solid fa-cart-shopping"></i> Buy</a><a class="${tab === "sell" ? "active" : ""}" data-action="pmkTab" data-tab="sell"><i class="fa-solid fa-hand-holding-dollar"></i> Sell</a></nav>` : "";
-    const body = tab === "sell" ? this.#sellHTML(actor, chosen, conf) : await this.#stockHTML(actor, rows, trade && pct !== null, pct ?? 0, cart);
+    const body = tab === "sell" ? this.#sellHTML(actor, chosen, conf, cart) : await this.#stockHTML(actor, rows, trade && pct !== null, pct ?? 0, cart);
     return `<div class="pmk-shopview pmk-keeperdrop">
+      ${chosen ? this.#tallyHTML(cart, chosen) : ""}
       <header class="pmk-shead">
         <a class="pmk-back" data-action="pmkBack"><i class="fa-solid fa-arrow-left"></i> ${esc(market.name)}</a>
         <div class="pmk-stitle"><img src="${esc(actor.img)}" alt=""><div><h2>${esc(actor.name)}</h2>
-          <div class="pmk-sub">${rows.length} ${rows.length === 1 ? "item" : "items"}${shopLevel(actor, market) ? ` · level ${shopLevel(actor, market)}` : ""}</div></div>
+          <div class="pmk-sub">${rows.length} ${rows.length === 1 ? "item" : "items"}${shopLevel(actor, market) ? ` · level ${shopLevel(actor, market)}` : ""}${conf.buys || this.isGM ? ` · <span class="pmk-purse" data-tooltip="What the shop can pay"><i class="fa-solid fa-sack-dollar"></i> ${esc(purse)}</span>` : ""}</div></div>
           ${keeperHTML}</div>
       </header>
       ${gmBar}
-      ${this.#statusHTML(market)}
+      ${this.#statusHTML(market, actor)}
       ${trade ? tradingAs : ""}
-      ${trade && (tab === "buy" || pct === null) ? priceLine : ""}
+      ${trade ? priceLine : ""}
       ${tabs}
       ${body}
     </div>`;
@@ -962,7 +1103,7 @@ class MarketApp extends Base {
         const rar = RARITY[r.rarity] ? `<span class="pmk-rar pmk-${esc(r.rarity)}">${RARITY[r.rarity]}</span>` : "";
         const note = r.holds ? `<span class="pmk-note">holds ${r.holds} ${r.holds === 1 ? "item" : "items"}; not for sale as it is</span>`
           : !r.identified && this.isGM ? `<span class="pmk-note">unidentified on the sheet; players see it, and buy it, identified</span>` : "";
-        const shown = adjust(r.cp, pct);
+        const shown = adjust(r.cp, pctFor(pct, r.type === "treasure"));
         const was = pct && shown !== r.cp ? ` <s class="pmk-per">${esc(formatCp(r.cp))}</s>` : "";
         const price = `${esc(formatCp(shown))}${was}${r.per > 1 ? ` <span class="pmk-per">for ${r.per}</span>` : ""}`;
         list.push(`<div class="pmk-row ${open ? "open" : ""} ${r.qty ? "" : "pmk-out"}" data-action="pmkItem" data-id="${esc(r.id)}">
@@ -977,7 +1118,7 @@ class MarketApp extends Base {
       }
     }
     const body = rows.length ? (list.length ? list.join("") : `<p class="pmk-none">Nothing here matches "${esc(this.view.query)}".</p>`)
-      : `<p class="pmk-none">${this.isGM ? "Nothing in stock. Open the merchant sheet and drag items in from the compendium." : "Nothing in stock."}</p>`;
+      : `<p class="pmk-none">Nothing in stock.</p>`;
     return `<label class="pmk-search"><i class="fa-solid fa-magnifying-glass"></i><input type="search" name="pmk-q" value="${esc(this.view.query)}" placeholder="Search this shop" autocomplete="off"></label>
       <div class="pmk-stock">
         <div class="pmk-rowhead"><span></span><span>Item</span><span>Level</span><span>Stock</span><span>Price</span><span></span></div>
@@ -985,40 +1126,36 @@ class MarketApp extends Base {
       </div>`;
   }
 
-  /** The Sell tab: what the chosen character carries, with the shop's offer for each. */
-  #sellHTML(shop, seller, conf) {
+  /** The Sell tab: what the chosen character carries, with the shop's offer for each. Choices go into the cart. */
+  #sellHTML(shop, seller, conf, cart) {
     if (!seller) return `<p class="pmk-none">You have no character to sell for.</p>`;
     if (pricePct(shop, seller) === null) return "";
     const rows = sellRows(seller);
     const pct = pricePct(shop, seller) ?? 0;
-    const offer = (r, qty) => offerFor(r.cp, r.per, qty, sellRate(conf, r.treasure, pct));
+    const offer = (r, qty) => offerFor(r.cp, r.per, qty, sellRate(conf, r.treasure, pctFor(pct, r.treasure)));
+    const offered = new Map(salesOf(cart, seller).map((l) => [l.item, l]));
     let total = 0;
     const list = rows.map((r) => {
-      const qty = Math.min(this.view.sell.get(r.id) ?? 0, r.qty);
-      if (!r.why) total += offer(r, qty);
+      const line = offered.get(r.id);
+      const here = line?.shop === shop.id ? Math.min(line.qty, r.qty) : 0;
+      const elsewhere = line && line.shop !== shop.id ? game.actors.get(line.shop) : null;
+      if (!r.why) total += offer(r, here);
       const each = offer(r, r.per);
+      const note = r.why ? esc(r.why) : `${each ? esc(formatCp(each)) : "under 1 cp"}${r.per > 1 ? ` for ${r.per}` : " each"}${elsewhere ? `; offered to ${esc(elsewhere.name)}` : ""}`;
       return `<div class="pmk-srow ${r.why ? "pmk-no" : ""}">
         <img src="${esc(r.img)}" alt="">
-        <span class="pmk-rn">${esc(r.name)}${r.why ? `<span class="pmk-note">${esc(r.why)}</span>` : `<span class="pmk-note">${each ? esc(formatCp(each)) : "under 1 cp"}${r.per > 1 ? ` for ${r.per}` : " each"}</span>`}</span>
+        <span class="pmk-rn">${esc(r.name)}<span class="pmk-note">${note}</span></span>
         <span class="pmk-qty">×${r.qty}</span>
-        ${r.why ? "<span></span>" : `<input type="number" class="pmk-qtyin" name="pmk-sellqty" data-item="${esc(r.id)}" value="${qty}" min="0" max="${r.qty}" step="1">`}
-        <span class="pmk-price">${r.why || !qty ? "" : esc(formatCp(offer(r, qty), "nothing"))}</span>
+        ${r.why ? "<span></span>" : `<input type="number" class="pmk-qtyin" name="pmk-saleqty" data-shop="${esc(shop.id)}" data-item="${esc(r.id)}" value="${here}" min="0" max="${r.qty}" step="1">`}
+        <span class="pmk-price">${r.why || !here ? "" : esc(formatCp(offer(r, here), "nothing"))}</span>
+        ${r.why ? `<span class="pmk-add"></span>` : this.#sellBtnHTML(r, here)}
       </div>`;
     }).join("");
-    const can = conf.unlimited ? Infinity : fundsCp(shop);
-    const short = total > can;
-    const capped = Math.max(conf.itemRate, conf.treasureRate) > 100 + pct;
-    const rates = `Pays ${conf.itemRate}% of an item's price${conf.treasureRate !== conf.itemRate ? `, ${conf.treasureRate}% for treasure` : ""}${capped ? `, never more than it would charge ${seller.name}` : ""}.`;
-    const why = !total ? "Choose how many to sell." : short ? `${esc(shop.name)} ${esc(canPay(shop))}.` : !this.isGM && !game.users.activeGM ? "A GM needs to be logged in to trade." : "";
-    return `<p class="pmk-hint">${esc(rates)} ${conf.unlimited ? "" : `The shop has ${esc(formatCp(can, "no money"))} to spend.`}</p>
-      <div class="pmk-stock">
-        <div class="pmk-srowhead"><span></span><span>Item</span><span>Have</span><span>Sell</span><span>Offer</span></div>
+    const short = !conf.unlimited && total > fundsCp(shop) ? `<p class="pmk-status pmk-warnbox">${esc(shop.name)} ${esc(canPay(shop))}.</p>` : "";
+    return `${short}<div class="pmk-stock">
+        <div class="pmk-srowhead"><span></span><span>Item</span><span>Have</span><span>Sell</span><span>Offer</span><span></span></div>
         ${list || `<p class="pmk-none">${esc(seller.name)} has nothing to sell.</p>`}
-      </div>
-      <div class="pmk-total"><div><span>${esc(seller.name)} gets</span><strong>${esc(formatCp(total, "nothing"))}</strong></div></div>
-      ${why && total ? `<p class="pmk-status">${why}</p>` : ""}
-      <div class="pmk-checkout">${waitingFor("sell") ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> Waiting for the GM...</button>`
-        : `<button type="button" data-action="pmkSell" ${why ? "disabled" : ""}><i class="fa-solid fa-hand-holding-dollar"></i> Sell for ${esc(formatCp(total, "nothing"))}</button>`}</div>`;
+      </div>`;
   }
 
   /** The GM's trade log, newest first. */
@@ -1034,64 +1171,100 @@ class MarketApp extends Base {
         ${e.note ? `<span class="pmk-lognote"><i class="fa-solid fa-triangle-exclamation"></i> ${esc(e.note)}</span>` : ""}</div>`;
     }).join("");
     return `<div class="pmk-logview"><header class="pmk-shead"><a class="pmk-back" data-action="pmkCartBack"><i class="fa-solid fa-arrow-left"></i> Back to the market</a><h2>Trade log</h2></header>
-      <div class="pmk-gmbar"><span class="pmk-dim">${log.length} ${log.length === 1 ? "trade" : "trades"}, newest first (the last ${300} are kept).</span><span class="pmk-gap"></span>
+      <div class="pmk-gmbar"><span class="pmk-dim">${log.length} ${log.length === 1 ? "trade" : "trades"}</span><span class="pmk-gap"></span>
       ${log.length ? `<button type="button" data-action="pmkClearLog"><i class="fa-solid fa-trash"></i> Clear the log</button>` : ""}</div>
       ${rows || `<p class="pmk-none">No trades yet.</p>`}</div>`;
   }
 
-  /** The add-to-cart button for a stock row: only where this user can trade, for something in stock and for sale. */
+  /** The add-to-cart button for a stock row: only where this user can trade, for something in stock and for sale.
+   * A click adds one (a batch for things sold in batches), a right-click takes one off. */
   #addHTML(r, trade, have) {
     if (!trade || !r.qty || r.holds) return `<span class="pmk-add"></span>`;
     const full = have >= r.qty;
-    const tip = full ? "All of it is in your cart" : r.per > 1 ? `Add ${Math.min(r.per, r.qty - have)} to the cart` : "Add to the cart";
+    const one = r.per > 1 ? `${Math.min(r.per, Math.max(1, r.qty - have))}` : "one";
+    const tip = `${full ? "All of it is in your cart" : `Click to add ${one}`}${have ? `; right-click to take ${r.per > 1 ? `${r.per}` : "one"} off` : ""}`;
     return `<span class="pmk-add"><a class="pmk-addbtn ${full ? "pmk-full" : ""}" data-action="pmkAdd" data-id="${esc(r.id)}" data-tooltip="${esc(tip)}"><i class="fa-solid fa-cart-plus"></i>${have ? `<span class="pmk-have">${have}</span>` : ""}</a></span>`;
   }
 
-  /** The cart: who's buying, what's in it by shop, the total and what's left after paying. */
+  /** The offer button for a sell row: a click offers one more (a batch), a right-click one fewer. */
+  #sellBtnHTML(r, here) {
+    const full = here >= r.qty;
+    const step = r.per > 1 ? `${r.per}` : "one";
+    const tip = `${full ? "All of it is offered" : `Click to offer ${step} more`}${here ? `; right-click for ${step} fewer` : ""}`;
+    return `<span class="pmk-add"><a class="pmk-addbtn pmk-sellbtn ${full ? "pmk-full" : ""}" data-action="pmkSellAdd" data-id="${esc(r.id)}" data-tooltip="${esc(tip)}"><i class="fa-solid fa-hand-holding-dollar"></i>${here ? `<span class="pmk-have">${here}</span>` : ""}</a></span>`;
+  }
+
+  /** A quantity with minus and plus buttons, for a cart line. */
+  #stepperHTML(kind, l, max) {
+    const keys = `data-kind="${kind}" data-shop="${esc(l.shop)}" data-item="${esc(l.item)}"`;
+    return `<span class="pmk-step">
+      <a class="pmk-stepbtn" data-action="pmkStep" data-dir="-1" ${keys} data-tooltip="One fewer"><i class="fa-solid fa-minus"></i></a>
+      <input type="number" class="pmk-qtyin" name="${kind === "buy" ? "pmk-qty" : "pmk-saleqty"}" ${kind === "buy" ? "" : `data-cart="1"`} data-shop="${esc(l.shop)}" data-item="${esc(l.item)}" value="${l.qty}" min="1" max="${Math.max(1, max)}" step="1">
+      <a class="pmk-stepbtn" data-action="pmkStep" data-dir="1" ${keys} data-tooltip="One more"><i class="fa-solid fa-plus"></i></a>
+    </span>`;
+  }
+
+  /** The cart: who's trading, what they buy and sell by shop, how it settles, and what's left after. */
   #cartHTML(cart) {
     const { list, chosen } = buyerChoices(cart);
-    const state = cartState(cart.lines, chosen);
     const back = `<a class="pmk-back" data-action="pmkCartBack"><i class="fa-solid fa-arrow-left"></i> Back to the market</a>`;
-    if (!state.length) {
+    const t = chosen ? tradeState(cart, chosen) : { empty: !cart.lines.length, buys: cartState(cart.lines, null), sales: [], buy: 0, sell: 0, net: 0, short: new Map() };
+    if (t.empty) {
       return `<div class="pmk-cartview"><header class="pmk-shead">${back}<h2>Cart</h2></header>
-        <p class="pmk-none">The cart is empty. Add things from a shop with <i class="fa-solid fa-cart-plus"></i>.</p></div>`;
+        <p class="pmk-none">The cart is empty.</p></div>`;
     }
-    const total = state.reduce((n, l) => n + l.price, 0);
-    const have = chosen ? fundsCp(chosen) : 0;
-    const groups = new Map();
-    for (const l of state) groups.set(l.shop, [...(groups.get(l.shop) ?? []), l]);
-    const body = [...groups.values()].map((lines) => {
+    const byShop = (lines) => {
+      const groups = new Map();
+      for (const l of lines) groups.set(l.shop, [...(groups.get(l.shop) ?? []), l]);
+      return [...groups.values()];
+    };
+    const head = (lines) => {
       const shop = lines[0].shopDoc;
       const where = lines[0].market ? ` <span class="pmk-dim">${esc(lines[0].market.name)}</span>` : "";
-      return `<div class="pmk-gh">${esc(shop?.name ?? "A shop that's gone")}${where}</div>` + lines.map((l) => {
-        const real = l.itemDoc ? realItem(l.itemDoc) : { name: "Gone", img: "" };
-        const max = Math.max(1, l.stock);
-        return `<div class="pmk-crow ${l.problem ? "pmk-bad" : ""}">
-          <img src="${esc(real.img)}" alt="">
-          <span class="pmk-rn">${esc(real.name)}${l.problem ? `<span class="pmk-note pmk-warn">${esc(l.problem)}</span>` : ""}</span>
-          <input type="number" class="pmk-qtyin" name="pmk-qty" data-shop="${esc(l.shop)}" data-item="${esc(l.item)}" value="${l.qty}" min="1" max="${max}" step="1">
-          <span class="pmk-price">${esc(formatCp(l.price))}</span>
-          <a class="pmk-x" data-action="pmkCartRemove" data-shop="${esc(l.shop)}" data-item="${esc(l.item)}" data-tooltip="Take it out of the cart"><i class="fa-solid fa-xmark"></i></a>
-        </div>`;
-      }).join("");
-    }).join("");
-    const buyers = list.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}: ${esc(formatCp(fundsCp(a), "no money"))}</option>`).join("");
-    const short = chosen && have < total;
-    const bad = state.some((l) => l.problem);
+      const short = t.short.get(lines[0].shop);
+      return `<div class="pmk-gh">${esc(shop?.name ?? "A shop that's gone")}${where}</div>${short ? `<p class="pmk-status pmk-warnbox">${esc(short)}</p>` : ""}`;
+    };
+    const remove = (kind, l) => `<a class="pmk-x" data-action="pmkCartRemove" data-kind="${kind}" data-shop="${esc(l.shop)}" data-item="${esc(l.item)}" data-tooltip="Take it out of the cart"><i class="fa-solid fa-xmark"></i></a>`;
+    const buying = byShop(t.buys).map((lines) => head(lines) + lines.map((l) => {
+      const real = l.itemDoc ? realItem(l.itemDoc) : { name: "Gone", img: "" };
+      return `<div class="pmk-crow ${l.problem ? "pmk-bad" : ""}">
+        <img src="${esc(real.img)}" alt="">
+        <span class="pmk-rn">${esc(real.name)}${l.problem ? `<span class="pmk-note pmk-warn">${esc(l.problem)}</span>` : ""}</span>
+        ${this.#stepperHTML("buy", l, l.stock)}
+        <span class="pmk-price">${esc(formatCp(l.price))}</span>
+        ${remove("buy", l)}
+      </div>`;
+    }).join("")).join("");
+    const selling = byShop(t.sales).map((lines) => head(lines) + lines.map((l) => `<div class="pmk-crow ${l.problem ? "pmk-bad" : ""}">
+        <img src="${esc(l.row?.img ?? "")}" alt="">
+        <span class="pmk-rn">${esc(l.row?.name ?? "Gone")}${l.problem ? `<span class="pmk-note pmk-warn">${esc(l.problem)}</span>` : ""}</span>
+        ${this.#stepperHTML("sale", l, l.row?.qty ?? 1)}
+        <span class="pmk-price">${esc(formatCp(l.offer, "nothing"))}</span>
+        ${remove("sale", l)}
+      </div>`).join("")).join("");
+    const have = chosen ? fundsCp(chosen) : 0;
+    const traders = list.map((a) => `<option value="${esc(a.id)}" ${a.id === chosen?.id ? "selected" : ""}>${esc(a.name)}${a.type === "party" ? " (party stash)" : ""}: ${esc(formatCp(fundsCp(a), "no money"))}</option>`).join("");
+    const short = chosen && t.net > have;
+    const bad = [...t.buys, ...t.sales].some((l) => l.problem) || t.short.size;
     const noGM = !this.isGM && !game.users.activeGM;
-    const why = !chosen ? "You have no character to buy for." : noGM ? "A GM needs to be logged in to trade." : bad ? "Fix the lines marked above first." : short ? `${esc(chosen.name)} is ${esc(formatCp(total - have))} short.` : "";
+    const why = !chosen ? "You have no character to trade for." : noGM ? "A GM needs to be logged in to trade." : bad ? "Fix the lines marked above first." : short ? `${esc(chosen.name)} is ${esc(formatCp(t.net - have))} short.` : "";
+    const label = t.net > 0 ? `Pay ${formatCp(t.net)}` : t.net < 0 ? `Trade and get ${formatCp(-t.net)}` : "Trade";
+    const name = chosen ? esc(chosen.name) : "";
     return `<div class="pmk-cartview">
       <header class="pmk-shead">${back}<h2>Cart</h2></header>
-      <label class="pmk-buyer">Buying for ${list.length ? `<select name="pmk-buyer">${buyers}</select>` : `<em>no character</em>`}</label>
-      <div class="pmk-stock">${body}</div>
+      <label class="pmk-buyer">Trading as ${list.length ? `<select name="pmk-buyer">${traders}</select>` : `<em>no character</em>`}</label>
+      ${t.buys.length ? `<h3 class="pmk-h"><i class="fa-solid fa-cart-shopping"></i> Buying</h3><div class="pmk-stock">${buying}</div>` : ""}
+      ${t.sales.length ? `<h3 class="pmk-h"><i class="fa-solid fa-hand-holding-dollar"></i> Selling</h3><div class="pmk-stock">${selling}</div>` : ""}
       <div class="pmk-total">
-        <div><span>Total</span><strong>${esc(formatCp(total))}</strong></div>
-        ${chosen ? `<div class="pmk-dim"><span>${esc(chosen.name)} has</span><span>${esc(formatCp(have, "no money"))}</span></div>
-        <div class="${short ? "pmk-warn" : "pmk-dim"}"><span>Left after</span><span>${short ? "not enough" : esc(formatCp(have - total, "nothing"))}</span></div>` : ""}
+        ${t.buys.length ? `<div><span>Buying</span><span>${esc(formatCp(t.buy))}</span></div>` : ""}
+        ${t.sales.length ? `<div><span>Selling</span><span>${t.buys.length ? "− " : ""}${esc(formatCp(t.sell, "nothing"))}</span></div>` : ""}
+        <div><span>${t.net > 0 ? `${name} pays` : t.net < 0 ? `${name} gets` : "Even"}</span><strong>${t.net ? esc(formatCp(Math.abs(t.net))) : ""}</strong></div>
+        ${chosen ? `<div class="pmk-dim"><span>${name} has</span><span>${esc(formatCp(have, "no money"))}</span></div>
+        <div class="${short ? "pmk-warn" : "pmk-dim"}"><span>After</span><span>${short ? "not enough" : esc(formatCp(have - t.net, "nothing"))}</span></div>` : ""}
       </div>
       ${why ? `<p class="pmk-status">${why}</p>` : ""}
-      <div class="pmk-checkout">${waitingFor("buy") ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> Waiting for the GM...</button>`
-        : `<button type="button" data-action="pmkCheckout" ${why ? "disabled" : ""}><i class="fa-solid fa-coins"></i> Buy for ${esc(formatCp(total))}</button>`}</div>
+      <div class="pmk-checkout">${busy() ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> ${trading ? "Trading..." : "Waiting for the GM..."}</button>`
+        : `<button type="button" data-action="pmkCheckout" data-buy="${t.buy}" data-sell="${t.sell}" ${why ? "disabled" : ""}><i class="fa-solid fa-coins"></i> ${esc(label)}</button>`}</div>
     </div>`;
   }
 
@@ -1148,46 +1321,52 @@ class MarketApp extends Base {
   }
 
   _onRender() {
+    const look = this.look ?? getLook();
+    for (const l of LOOKS) this.element.classList.toggle(`pmk-look-${l}`, l === look);
+    const tint = game.settings.get(MOD, "sheetColor");
+    for (const t of SHEET_COLORS) this.element.classList.toggle(`pmk-tint-${t}`, t === tint);
+    this.element.classList.toggle("pmk-tinted", tint !== "red" && SHEET_COLORS.includes(tint));
     // Quantities are kept as they're typed and the window redraws a moment later, not on blur: a redraw on blur would
     // replace the Buy or Sell button under the click that caused the blur.
     const later = () => {
       clearTimeout(this.qtyTimer);
       this.qtyTimer = setTimeout(() => this.render(), 400);
     };
-    for (const q of this.element.querySelectorAll('input[name="pmk-qty"]')) {
+    // Quantities typed into the cart (or the Sell tab) are saved as they're typed.
+    for (const q of this.element.querySelectorAll('input[name="pmk-qty"], input[name="pmk-saleqty"]')) {
+      const sale = q.name === "pmk-saleqty";
+      const current = () => {
+        const cart = loadCart();
+        if (!sale) return cart.lines.find((l) => l.shop === q.dataset.shop && l.item === q.dataset.item)?.qty ?? 0;
+        const { chosen } = buyerChoices(cart);
+        const line = cart.sales.find((l) => l.actor === chosen?.id && l.item === q.dataset.item);
+        return line?.shop === q.dataset.shop ? line.qty : 0;
+      };
       q.addEventListener("input", () => {
         if (q.value === "") return;
-        const cart = loadCart();
-        const line = cart.lines.find((l) => l.shop === q.dataset.shop && l.item === q.dataset.item);
-        if (!line) return;
-        const n = Math.max(1, Math.min(Math.floor(Number(q.value)) || 1, Number(q.max) || 1));
-        if (n === line.qty) return;
-        line.qty = n;
-        saveCart(cart);
+        const lo = q.dataset.cart || !sale ? 1 : 0;
+        const n = Math.max(lo, Math.min(Math.floor(Number(q.value)) || lo, Number(q.max) || lo));
+        if (n === current()) return;
+        this.#setQty(sale ? "sale" : "buy", q.dataset.shop, q.dataset.item, n);
         later();
       });
       q.addEventListener("change", () => {
-        if (q.value === "" || Number(q.value) !== loadCart().lines.find((l) => l.shop === q.dataset.shop && l.item === q.dataset.item)?.qty) later();
+        if (q.value === "" || Number(q.value) !== current()) later();
       });
     }
     this.element.querySelector('select[name="pmk-buyer"]')?.addEventListener("change", (ev) => {
       const cart = loadCart();
       cart.buyer = ev.target.value;
       saveCart(cart);
-      this.view.sell = new Map();
       this.render();
     });
-    for (const q of this.element.querySelectorAll('input[name="pmk-sellqty"]')) {
-      q.addEventListener("input", () => {
-        if (q.value === "") return;
-        const n = Math.max(0, Math.min(Math.floor(Number(q.value)) || 0, Number(q.max) || 0));
-        if (n === (this.view.sell.get(q.dataset.item) ?? 0)) return;
-        if (n) this.view.sell.set(q.dataset.item, n);
-        else this.view.sell.delete(q.dataset.item);
-        later();
-      });
-      q.addEventListener("change", () => {
-        if (Number(q.value) !== (this.view.sell.get(q.dataset.item) ?? 0)) later();
+    // A right-click on an add or offer button takes one off.
+    for (const btn of this.element.querySelectorAll(".pmk-addbtn")) {
+      btn.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (btn.classList.contains("pmk-sellbtn")) this.#offer(btn.dataset.id, -1);
+        else this.#addToCart(btn.dataset.id, -1);
       });
     }
     // GM: drag an NPC onto a shop to make them its shopkeeper.
@@ -1253,7 +1432,6 @@ class MarketApp extends Base {
       app.view.cart = false;
       app.view.log = false;
       app.view.tab = "buy";
-      app.view.sell = new Map();
       app.view.open = new Set();
       app.view.market = marketId;
       app.view.shop = shopId;
@@ -1279,7 +1457,6 @@ class MarketApp extends Base {
     if (event.target.closest(".pmk-x")) return;
     this.view.shop = target.dataset.id;
     this.view.tab = "buy";
-    this.view.sell = new Map();
     this.view.query = "";
     this.view.open = new Set();
     this.render();
@@ -1301,15 +1478,92 @@ class MarketApp extends Base {
   }
 
   static #onAdd(event, target) {
+    this.#addToCart(target.dataset.id, 1);
+  }
+
+  /** Put one more (dir 1) or one fewer (dir -1) of a shop item in the cart: a batch for things sold in batches. */
+  #addToCart(itemId, dir) {
     const actor = game.actors.get(this.view.shop);
-    const item = actor?.items.get(target.dataset.id);
+    const item = actor?.items.get(itemId);
     if (!item || !sellable(item)) return;
-    const market = marketById(this.view.market);
-    if (!canTrade(market, this.isGM)) return void ui.notifications.warn("Marketplace: this market isn't open for trade right now.");
+    if (dir > 0 && !tradeMarketFor(actor.id, game.user)) return void ui.notifications.warn("Marketplace: this shop isn't open for trade right now.");
     const cart = loadCart();
     const { per } = priceOf(item);
-    cart.lines = addToCart(cart.lines, actor.id, item.id, per, quantityOf(item));
+    if (dir > 0) {
+      const had = cart.lines.find((l) => l.shop === actor.id && l.item === item.id);
+      cart.lines = addToCart(cart.lines, actor.id, item.id, per, quantityOf(item));
+      if (!had && !cart.lines.some((l) => l.shop === actor.id && l.item === item.id) && quantityOf(item)) ui.notifications.warn(`Marketplace: the cart is full (${MAX_LINES} lines). Trade or take something out first.`);
+    } else cart.lines = takeFromCart(cart.lines, actor.id, item.id, per);
     saveCart(cart);
+    this.render();
+  }
+
+  static #onSellAdd(event, target) {
+    this.#offer(target.dataset.id, 1);
+  }
+
+  /** Offer one more (dir 1) or one fewer (dir -1) of the trader's item to this shop: a batch for things sold in batches. */
+  #offer(itemId, dir) {
+    const shop = game.actors.get(this.view.shop);
+    const cart = loadCart();
+    const { chosen } = buyerChoices(cart);
+    const row = sellRows(chosen).find((r) => r.id === itemId);
+    if (!shop || !chosen || !row || row.why) return;
+    if (dir > 0 && !tradeMarketFor(shop.id, game.user)) return void ui.notifications.warn("Marketplace: this shop isn't open for trade right now.");
+    // Sales for characters this user can no longer trade for don't take up room.
+    const mine = new Set(buyerChoices(cart).list.map((a) => a.id));
+    cart.sales = cart.sales.filter((l) => mine.has(l.actor));
+    const line = cart.sales.find((l) => l.actor === chosen.id && l.item === itemId);
+    if (dir > 0) {
+      if (line && line.shop !== shop.id) ui.notifications.info(esc(`Marketplace: ${row.name} is now offered to ${shop.name} instead of ${game.actors.get(line.shop)?.name ?? "the other shop"}.`));
+      cart.sales = addSale(cart.sales, chosen.id, shop.id, itemId, row.per, row.qty);
+      if (!cart.sales.some((l) => l.actor === chosen.id && l.item === itemId)) ui.notifications.warn(`Marketplace: the cart is full (${MAX_LINES} lines). Trade or take something out first.`);
+    } else if (line?.shop === shop.id) cart.sales = takeSale(cart.sales, chosen.id, itemId, row.per);
+    saveCart(cart);
+    this.render();
+  }
+
+  /** Set a cart line's quantity (a sale of 0 comes out of the cart). */
+  #setQty(kind, shopId, itemId, n) {
+    const cart = loadCart();
+    if (kind === "buy") {
+      const line = cart.lines.find((l) => l.shop === shopId && l.item === itemId);
+      if (line) line.qty = n;
+      else if (n >= 1) cart.lines.push({ shop: shopId, item: itemId, qty: n });
+    } else {
+      const { chosen } = buyerChoices(cart);
+      if (!chosen) return;
+      const was = cart.sales.find((l) => l.actor === chosen.id && l.item === itemId);
+      if (was && was.shop !== shopId && n >= 1) {
+        const name = sellRows(chosen).find((r) => r.id === itemId)?.name ?? "It";
+        ui.notifications.info(esc(`Marketplace: ${name} is now offered to ${game.actors.get(shopId)?.name ?? "this shop"} instead of ${game.actors.get(was.shop)?.name ?? "the other shop"}.`));
+      }
+      cart.sales = cart.sales.filter((l) => !(l.actor === chosen.id && l.item === itemId));
+      if (n >= 1) cart.sales.push({ actor: chosen.id, shop: shopId, item: itemId, qty: n });
+    }
+    saveCart(cart);
+  }
+
+  /** The cart's minus and plus buttons: one batch at a time, never below one or above what there is. */
+  static #onStep(event, target) {
+    const { kind, shop, item } = target.dataset;
+    const dir = Number(target.dataset.dir) < 0 ? -1 : 1;
+    const cart = loadCart();
+    if (kind === "buy") {
+      const doc = game.actors.get(shop)?.items.get(item);
+      const line = cart.lines.find((l) => l.shop === shop && l.item === item);
+      if (!line) return;
+      const per = doc ? priceOf(doc).per : 1;
+      const max = doc ? quantityOf(doc) : line.qty;
+      this.#setQty("buy", shop, item, Math.max(1, Math.min(max, line.qty + dir * per)));
+    } else {
+      const { chosen } = buyerChoices(cart);
+      const row = sellRows(chosen).find((r) => r.id === item);
+      const line = cart.sales.find((l) => l.actor === chosen?.id && l.item === item);
+      if (!line) return;
+      const per = row?.per ?? 1;
+      this.#setQty("sale", shop, item, Math.max(1, Math.min(row?.qty ?? line.qty, line.qty + dir * per)));
+    }
     this.render();
   }
 
@@ -1327,14 +1581,7 @@ class MarketApp extends Base {
 
   static #onTab(event, target) {
     this.view.tab = target.dataset.tab === "sell" ? "sell" : "buy";
-    this.view.sell = new Map();
     this.render();
-  }
-
-  static #onSell() {
-    const shop = game.actors.get(this.view.shop);
-    const { chosen } = buyerChoices(loadCart());
-    sellNow(this, shop, chosen);
   }
 
   static async #onFill() {
@@ -1367,13 +1614,16 @@ class MarketApp extends Base {
 
   static #onCartRemove(event, target) {
     const cart = loadCart();
-    cart.lines = cart.lines.filter((l) => !(l.shop === target.dataset.shop && l.item === target.dataset.item));
+    const { shop, item } = target.dataset;
+    const { chosen } = buyerChoices(cart);
+    if (target.dataset.kind === "sale") cart.sales = cart.sales.filter((l) => !(l.actor === chosen?.id && l.shop === shop && l.item === item));
+    else cart.lines = cart.lines.filter((l) => !(l.shop === shop && l.item === item));
     saveCart(cart);
     this.render();
   }
 
-  static #onCheckout() {
-    checkout();
+  static #onCheckout(event, target) {
+    checkout({ buy: Number(target.dataset.buy), sell: Number(target.dataset.sell) });
   }
 
   static async #onNewMarket() {
@@ -1477,6 +1727,13 @@ class MarketApp extends Base {
     const actor = game.actors.get(this.view.shop);
     if (!actor) return;
     await actor.update({ [`flags.${MOD}.hidden`]: !actor.flags?.[MOD]?.hidden });
+  }
+
+  static async #onCloseShop() {
+    if (!this.isGM) return;
+    const actor = game.actors.get(this.view.shop);
+    if (!actor) return;
+    await actor.update({ [`flags.${MOD}.closed`]: !actor.flags?.[MOD]?.closed });
   }
 
   static #onSheet() {
@@ -1589,6 +1846,13 @@ Hooks.once("init", () => {
     onChange: () => refresh(),
   });
   game.settings.register(MOD, "log", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh() });
+  game.settings.register(MOD, "sheetColor", {
+    name: "Pathfinder sheet look: color",
+    hint: "The color of the Marketplace's Pathfinder sheet look (chosen in the window's menu).",
+    scope: "client", config: true, type: String, default: "red",
+    choices: { red: "Red", green: "Green", blue: "Blue", purple: "Purple", brown: "Brown", black: "Black" },
+    onChange: () => refresh(),
+  });
   game.settings.register(MOD, "purseScale", {
     name: "Shop purse size (%)",
     hint: "How full Fill purse (and a new shop) makes a shop's purse: 100% is one level's party treasure for the shop's level (GM Core), 100 gp below level 1. Lower it for a poor region, raise it for a rich one.",
@@ -1602,7 +1866,7 @@ Hooks.once("init", () => {
   for (const a of ATTITUDES) {
     game.settings.register(MOD, `price-${a}`, {
       name: `Price change: ${ATTITUDE_LABEL[a]} (%)`,
-      hint: a === "indifferent" ? "What players pay when buying from a shopkeeper with this attitude, in percent: positive costs more, negative is a discount. Selling prices don't change with attitude."
+      hint: a === "indifferent" ? "What players pay when buying from a shopkeeper with this attitude, in percent: positive costs more, negative is a discount. Treasure is never discounted. What a shop pays doesn't change, except that it never pays more than it would charge."
         : "Positive costs more, negative is a discount (buying only).",
       scope: "world", config: true, type: Number, default: PRICE_DEFAULTS[a], range: { min: -90, max: 200, step: 5 }, onChange: () => refresh(),
     });

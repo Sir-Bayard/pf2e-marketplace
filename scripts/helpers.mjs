@@ -50,6 +50,9 @@ export const byMarketOrder = (a, b) => (a.sort - b.sort) || a.name.localeCompare
 /** Can this user see the market (GMs always), and can they trade in it? */
 export const canSee = (market, isGM) => !!market && (isGM || market.visible);
 export const canTrade = (market, isGM) => !!market && (isGM || (market.visible && market.open));
+/** Can this user trade with this shop in this market? The market must be open, and the shop (a row from `shopsOf`, or
+ * anything with `closed`) not closed by itself. GMs can trade anywhere. */
+export const canTradeShop = (market, shop, isGM) => canTrade(market, isGM) && !!shop && (isGM || !shop.closed);
 
 /** Is a folder the market's folder or inside it? `parentOf(id)` gives a folder's parent id (or null). */
 export function inFolder(folderId, rootId, parentOf) {
@@ -64,7 +67,7 @@ export function inFolder(folderId, rootId, parentOf) {
 
 /**
  * The shops of a market: merchants in its folder (subfolders too) and those added by hand, by name.
- * `actors` are plain rows { id, name, folder, merchant, hidden }. Players don't get hidden shops.
+ * `actors` are plain rows { id, name, folder, merchant, hidden, closed }. Players don't get hidden shops.
  */
 export function shopsOf(market, actors, parentOf, isGM) {
   if (!market) return [];
@@ -167,6 +170,11 @@ export function addToCart(lines, shop, item, qty, stock) {
   return out.filter((l) => l.qty >= 1);
 }
 
+/** Take `qty` off a cart line (the line goes at none). */
+export function takeFromCart(lines, shop, item, qty) {
+  return cleanLines(lines).map((l) => (l.shop === shop && l.item === item ? { ...l, qty: l.qty - Math.max(0, qty) } : l)).filter((l) => l.qty >= 1);
+}
+
 /** "Longsword, 10 Arrows and Chain Mail": a list of bought things for a notice. */
 export function listOf(names) {
   if (names.length <= 1) return names.join("");
@@ -218,6 +226,10 @@ export function attitudePct(attitude, pcts, hostileRefuses = true) {
   return Number.isFinite(n) ? Math.max(-100, Math.min(1000, n)) : PRICE_DEFAULTS[a];
 }
 
+/** The price change that applies to an item: treasure (gems, art objects) is never discounted, since shops buy it
+ * back at its full value; a markup still applies. Design decision, 10 Nov. */
+export const pctFor = (pct, treasure) => (treasure ? Math.max(0, Number(pct) || 0) : Number(pct) || 0);
+
 /** A price changed by a percentage, rounded up to the copper (never below nothing). */
 export const adjust = (cp, pct) => Math.max(0, Math.ceil((Math.max(0, Number(cp) || 0) * (100 + (Number(pct) || 0))) / 100));
 
@@ -229,24 +241,83 @@ export const sellRate = (conf, treasure, pct) => Math.max(0, Math.min(treasure ?
  * the copper, since the shop is the one paying. */
 export const offerFor = (cp, per, qty, ratePct) => Math.floor((Math.max(0, Number(cp) || 0) * Math.max(0, Number(qty) || 0) * Math.max(0, Number(ratePct) || 0)) / (Math.max(1, Number(per) || 1) * 100));
 
-/** Lines of a sale: { item, qty } with real ids and whole quantities, each item once. */
-export function cleanSellLines(raw) {
+/** What the trader offers in the cart: { actor, shop, item, qty }, the trader's item and the shop it's offered to. Each
+ * item is offered once, to one shop. */
+export function cleanSales(raw) {
   const out = [];
   const seen = new Map();
   for (const l of Array.isArray(raw) ? raw : []) {
-    const item = String(l?.item ?? "");
+    const actor = String(l?.actor ?? ""), shop = String(l?.shop ?? ""), item = String(l?.item ?? "");
     const qty = Math.floor(Number(l?.qty));
-    if (!ID.test(item) || !(qty >= 1)) continue;
-    if (seen.has(item)) {
-      seen.get(item).qty = Math.min(MAX_QTY, seen.get(item).qty + qty);
+    if (!ID.test(actor) || !ID.test(shop) || !ID.test(item) || !(qty >= 1)) continue;
+    const key = `${actor}.${item}`;
+    if (seen.has(key)) {
+      const line = seen.get(key);
+      if (line.shop === shop) line.qty = Math.min(MAX_QTY, line.qty + qty);
       continue;
     }
     if (out.length >= MAX_LINES) break;
-    const line = { item, qty: Math.min(MAX_QTY, qty) };
-    seen.set(item, line);
+    const line = { actor, shop, item, qty: Math.min(MAX_QTY, qty) };
+    seen.set(key, line);
     out.push(line);
   }
   return out;
+}
+
+/** Offer `qty` more of an item to a shop, never more than the trader has. An item already offered to another shop
+ * moves to this one, starting again from `qty`. */
+export function addSale(sales, actor, shop, item, qty, have) {
+  const out = cleanSales(sales);
+  const i = out.findIndex((l) => l.actor === actor && l.item === item);
+  const was = i >= 0 && out[i].shop === shop ? out[i].qty : 0;
+  const want = Math.min(Math.max(0, have), was + qty);
+  if (i >= 0) out.splice(i, 1);
+  if (want >= 1 && out.length < MAX_LINES) out.push({ actor, shop, item, qty: Math.min(MAX_QTY, want) });
+  return out;
+}
+
+/** Offer `qty` fewer (the line goes at none). */
+export function takeSale(sales, actor, item, qty) {
+  return cleanSales(sales).map((l) => (l.actor === actor && l.item === item ? { ...l, qty: l.qty - Math.max(0, qty) } : l)).filter((l) => l.qty >= 1);
+}
+
+/**
+ * How a trade settles. `buys` are { shop, price } and `sales` { shop, offer }, in copper. Sales are settled with
+ * purchases: at each shop only the difference changes hands. Returns { buy, sell, net, shops }: `net` is what the
+ * trader pays (negative: what they get), `shops` maps each shop to what it takes in (negative: what it pays out).
+ */
+export function settle(buys, sales) {
+  const shops = new Map();
+  let buy = 0, sell = 0;
+  for (const b of buys) {
+    const n = Math.max(0, Math.round(Number(b.price) || 0));
+    buy += n;
+    shops.set(b.shop, (shops.get(b.shop) ?? 0) + n);
+  }
+  for (const s of sales) {
+    const n = Math.max(0, Math.round(Number(s.offer) || 0));
+    sell += n;
+    shops.set(s.shop, (shops.get(s.shop) ?? 0) - n);
+  }
+  return { buy, sell, net: buy - sell, shops };
+}
+
+/**
+ * Who pays whom in a settled trade. `shopInfo` maps each shop to { unlimited, funds } (copper). Returns `owing` (shops
+ * that pay out, [id, cp]; an unlimited purse pays nothing), `receipts` (shops that take in, [id, cp]) and `short`
+ * (shops whose purse can't cover what they owe).
+ */
+export function planTrade(settled, shopInfo) {
+  const owing = [], receipts = [], short = [];
+  for (const [id, n] of settled.shops) {
+    const info = shopInfo.get(id) ?? { unlimited: false, funds: 0 };
+    if (n > 0) receipts.push([id, n]);
+    else if (n < 0 && !info.unlimited) {
+      owing.push([id, -n]);
+      if ((Number(info.funds) || 0) < -n) short.push(id);
+    }
+  }
+  return { owing, receipts, short };
 }
 
 /* ------------------------------------------------------------------ */
