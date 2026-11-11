@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+Requests.
+
+- **Requests at the Trade Post**: an offer can give nothing and only ask, for coins from anyone or for coins and items of one character. Another character fills it with Give.
+- Opening a shop in a closed market, or showing one in a hidden market, offers to open or show the market too.
+
 ## 0.4.0
 
 Formulas.

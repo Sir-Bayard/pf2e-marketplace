@@ -657,7 +657,8 @@ export function cleanOffer(o) {
   const to = ID.test(String(o.to ?? "")) && o.to !== o.from ? String(o.to) : null;
   const give = { items: cleanOfferItems(o.give?.items), cp: coinsCp(o.give?.cp) };
   const want = { items: to ? cleanOfferItems(o.want?.items) : [], cp: coinsCp(o.want?.cp) };
-  if (!give.items.length && !give.cp) return null;
+  // Something must change hands: an offer, a request (nothing given, something asked for), or a gift of items.
+  if (!give.items.length && !give.cp && !want.items.length && !want.cp) return null;
   if (!want.items.length && !want.cp && !give.items.length) return null;
   return {
     id: String(o.id),

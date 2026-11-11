@@ -776,6 +776,8 @@ function mutateOffers(fn) {
 }
 /** Characters a user can trade for at the Trade Post: their characters, never the party stash (a design decision). */
 const tradersFor = (user) => buyersFor(user, game.actors.contents).filter((a) => a.type === "character");
+/** A request: an offer that gives nothing and asks for something. */
+const isRequest = (o) => !o.give.items.length && !o.give.cp;
 /** Characters an offer can be for: any character a player owns. */
 const offerTargets = () => game.actors.filter((a) => a.type === "character" && a.hasPlayerOwner);
 
@@ -808,7 +810,7 @@ function offerProblem(offer, taker) {
  * player's character, at most 10 offers per character. */
 async function processPost(msg, sender) {
   const o = cleanOffer({ ...msg.offer, id: foundry.utils.randomID(16), user: sender.id, created: Date.now() });
-  if (!o) throw new Refused("an offer needs something offered, and something asked for or offered.");
+  if (!o) throw new Refused("an offer needs something offered or asked for (a gift of coins alone isn't an offer).");
   const from = game.actors.get(o.from);
   if (!from || !tradersFor(sender).some((a) => a.id === from.id)) throw new Refused("you can't post for that character.");
   if (o.to && !offerTargets().some((a) => a.id === o.to)) throw new Refused("that character can't trade here.");
@@ -917,7 +919,7 @@ async function processAccept(msg, sender) {
   } catch (err) {
     console.error(`${MOD} | the taken offer couldn't be taken down`, err);
   }
-  const text = `${taker.name} took ${from.name}'s offer.`;
+  const text = isRequest(o) ? `${taker.name} filled ${from.name}'s request.` : `${taker.name} took ${from.name}'s offer.`;
   if (o.user && o.user !== sender.id) game.socket.emit(SOCKET, { type: "notice", users: [o.user], text });
   return { text: text + (unpaid ? " Part of the money didn't arrive; the GM has been told." : ""), unpaid };
 }
@@ -1508,11 +1510,11 @@ class MarketApp extends Base {
       const act = own || this.isGM
         ? `<button type="button" data-action="pmkWithdraw" data-id="${esc(o.id)}"><i class="fa-solid fa-xmark"></i> ${own ? "Take down" : "Remove"}</button>` : "";
       const take = canTake ? (posting || waitingFor("accept") ? `<button type="button" disabled><i class="fa-solid fa-hourglass-half"></i> Waiting...</button>`
-        : `<button type="button" data-action="pmkAccept" data-id="${esc(o.id)}" ${problem ? "disabled" : ""}><i class="fa-solid fa-handshake"></i> Accept</button>`) : "";
+        : `<button type="button" data-action="pmkAccept" data-id="${esc(o.id)}" ${problem ? "disabled" : ""}><i class="fa-solid fa-handshake"></i> ${isRequest(o) ? "Give" : "Accept"}</button>`) : "";
       return `<div class="pmk-offer ${problem ? "pmk-stale" : ""}">
         <div class="pmk-ohead"><img src="${esc(from?.img ?? "")}" alt=""><strong>${esc(from?.name ?? "Gone")}</strong>
-          <span class="pmk-dim">${o.to ? `for ${esc(to?.name ?? "a character who's gone")}` : "for anyone"}</span><span class="pmk-gap"></span>${take}${act}</div>
-        <div class="pmk-oside"><span class="pmk-olabel">Gives</span>${side(o.give)}</div>
+          <span class="pmk-dim">${isRequest(o) ? "asks " : ""}${o.to ? `${isRequest(o) ? "" : "for "}${esc(to?.name ?? "a character who's gone")}` : isRequest(o) ? "anyone" : "for anyone"}</span><span class="pmk-gap"></span>${take}${act}</div>
+        ${isRequest(o) ? "" : `<div class="pmk-oside"><span class="pmk-olabel">Gives</span>${side(o.give)}</div>`}
         <div class="pmk-oside"><span class="pmk-olabel">Wants</span>${side(o.want)}</div>
         ${o.note ? `<p class="pmk-onote">${esc(o.note)}</p>` : ""}
         ${problem && (canTake || own) ? `<p class="pmk-note pmk-warn">${esc(problem)}</p>` : ""}
@@ -1551,7 +1553,7 @@ class MarketApp extends Base {
     return `<div class="pmk-postview">
       <header class="pmk-shead"><a class="pmk-back" data-action="pmkOfferCancel"><i class="fa-solid fa-arrow-left"></i> Trade Post</a><h2>New offer from ${esc(me.name)}</h2></header>
       <label class="pmk-buyer">For <select name="d-to"><option value="">Anyone</option>${targets.map((a) => `<option value="${esc(a.id)}" ${a.id === to?.id ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</select></label>
-      <h3 class="pmk-h">${esc(me.name)} gives</h3>
+      <h3 class="pmk-h">${esc(me.name)} gives <span class="pmk-dim">(leave empty for a request)</span></h3>
       <div class="pmk-stock">${rows(me, "d-give", d.give)}</div>
       <div class="pmk-buyer">Coins ${coins("d-gcp", d.giveCp)}</div>
       <h3 class="pmk-h">${to ? `${esc(to.name)} gives` : "Asking for"}</h3>
@@ -1587,6 +1589,7 @@ class MarketApp extends Base {
       const what = listOf(e.items.map((i) => (i.qty > 1 ? `${i.name} ×${i.qty}` : i.name)));
       const got = listOf((e.got ?? []).map((i) => (i.qty > 1 ? `${i.name} ×${i.qty}` : i.name)));
       const verb = e.kind === "buy" ? `bought ${esc(what)} from` : e.kind === "sell" ? `sold ${esc(what)} to`
+        : !what && e.net >= 0 ? `got ${esc(listOf([got, e.net ? formatCp(e.net) : ""].filter(Boolean)) || "nothing")} from`
         : !got && e.net <= 0 ? `gave ${esc(what || "coins")} to`
         : `traded ${esc(what || "coins")} for ${esc(got || "coins")}${e.net && what && got ? ` (${e.net > 0 ? "and got" : "and paid"} ${esc(formatCp(Math.abs(e.net)))})` : ""} with`;
       const who = e.user && e.user !== e.actor ? ` <span class="pmk-dim">(${esc(e.user)})</span>` : "";
@@ -2344,15 +2347,43 @@ class MarketApp extends Base {
     if (!this.isGM) return;
     const actor = game.actors.get(this.view.shop);
     if (!actor) return;
-    await actor.update({ [`flags.${MOD}.hidden`]: !actor.flags?.[MOD]?.hidden });
+    const showing = !!actor.flags?.[MOD]?.hidden;
+    await actor.update({ [`flags.${MOD}.hidden`]: !showing });
+    if (showing) await this.#offerMarket("visible");
   }
 
   static async #onCloseShop() {
     if (!this.isGM) return;
     const actor = game.actors.get(this.view.shop);
     if (!actor) return;
-    if (!actor.flags?.[MOD]?.closed && openToPlayers(actor)) await noteSeen([actor]);
-    await actor.update({ [`flags.${MOD}.closed`]: !actor.flags?.[MOD]?.closed });
+    const opening = !!actor.flags?.[MOD]?.closed;
+    if (!opening && openToPlayers(actor)) await noteSeen([actor]);
+    await actor.update({ [`flags.${MOD}.closed`]: !opening });
+    if (opening) await this.#offerMarket("open");
+  }
+
+  /** After a shop is shown or opened: if its market is hidden or closed, players still can't see it or trade there, so
+   * offer to show or open the market too. */
+  async #offerMarket(what) {
+    const market = marketById(this.view.market);
+    if (!market || market[what]) return;
+    const content = what === "open"
+      ? `<p>${esc(market.name)} is closed, so players can't trade here. Open the market too?</p>`
+      : `<p>${esc(market.name)} is hidden, so players can't see this shop. Show the market too?</p>`;
+    const ok = await DialogV2().confirm({
+      window: { title: what === "open" ? "The market is closed" : "The market is hidden", icon: "fa-solid fa-shop" },
+      classes: ["pmk-dialog"],
+      content,
+      yes: { label: what === "open" ? "Open the market" : "Show the market", icon: "fa-solid fa-check" },
+      no: { label: "Just the shop", icon: "fa-solid fa-xmark" },
+      rejectClose: false,
+    });
+    if (!ok) return;
+    await mutateMarket(market.id, (m) => {
+      m[what] = true;
+      // Open for trade means players can see it too.
+      if (what === "open") m.visible = true;
+    });
   }
 
   static async #onRestock() {

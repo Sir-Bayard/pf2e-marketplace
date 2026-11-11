@@ -62,7 +62,7 @@ A market starts hidden and closed.
 On a shop's page:
 
 - **Shown / Hidden**: a hidden shop doesn't appear to players even in a visible market (a fence, a back room).
-- **Open / Closed**: players can browse a closed shop but not trade there, even in an open market (closed for the night, sold out until the caravan comes). The market's own switches come first: players can't trade anywhere in a closed market.
+- **Open / Closed**: players can browse a closed shop but not trade there, even in an open market (closed for the night, sold out until the caravan comes). The market's own switches come first: players can't trade anywhere in a closed market, so opening (or showing) a shop in a closed (or hidden) market offers to open (or show) the market too.
 - **The purse** is the merchant's own coins, the money buyers pay in and the money it pays for what players sell. **Fill purse** tops it up to one level's party treasure for the shop's level (GM Core's table; 100 gp below level 1). It only adds coins, never takes any away, and you can always change the coins on the sheet.
 - **Settings**: the shop's level (at 0 it takes its market's), whether it buys from players, what it pays (50% of an item's price and 100% of treasure's value by default), an unlimited purse for a shop that never runs out, how many restocks it keeps what players sold, its rotating stock lines (see Stock and restocks) and its attitude (see below).
 - **Merchant sheet** opens the PF2e sheet.
@@ -121,7 +121,7 @@ Open the **Marketplace**, pick a market and a shop. Click an item for its descri
 
 ### The Trade Post
 
-**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
+**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Give nothing and it's a request (5 sp from anyone, say), which another character fills with **Give**. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
 
 A GM has to be logged in for any trade: Foundry only lets a GM's client change the merchants. Browsing works without one.
 
