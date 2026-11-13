@@ -69,8 +69,9 @@ export function inFolder(folderId, rootId, parentOf) {
 }
 
 /**
- * The shops of a market: merchants in its folder (subfolders too) and those added by hand, by name.
- * `actors` are plain rows { id, name, folder, merchant, hidden, closed }. Players don't get hidden shops.
+ * The shops of a market: merchants in its folder (subfolders too) and those added by hand, sorted by name, each with
+ * `byHand` set. `actors` are plain rows { id, name, folder, merchant, hidden, closed }. Players don't get hidden
+ * shops.
  */
 export function shopsOf(market, actors, parentOf, isGM) {
   if (!market) return [];
@@ -113,7 +114,10 @@ export const CATEGORIES = [
   ["formulas", "Formulas", []],
 ];
 const CATEGORY_OF = new Map(CATEGORIES.flatMap(([key, , types]) => types.map((t) => [t, key])));
-/** A row's group: by its type, except runes (PF2e marks them by usage, "etched onto a weapon" or "armor"). */
+/**
+ * A row's group: "formulas" for a formula, runes by usage (PF2e marks them "etched onto a weapon" or "armor"), else
+ * by type ("gear" when unknown).
+ */
 export const categoryOf = (row) => (row?.formula ? "formulas" : String(row?.usage ?? "").startsWith("etched-onto") ? "runes" : CATEGORY_OF.get(row?.type) ?? "gear");
 
 /** Does a stock row match a search? Every word must appear in its name, its traits or its type. */
@@ -174,7 +178,7 @@ export function addToCart(lines, shop, item, qty, stock) {
   return out.filter((l) => l.qty >= 1);
 }
 
-/** Take `qty` off a cart line (the line goes at none). */
+/** Take `qty` off a cart line (dropped at zero). */
 export function takeFromCart(lines, shop, item, qty) {
   return cleanLines(lines).map((l) => (l.shop === shop && l.item === item ? { ...l, qty: l.qty - Math.max(0, qty) } : l)).filter((l) => l.qty >= 1);
 }
@@ -226,7 +230,7 @@ export function cleanShop(raw) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Stock kinds (0.2)                                                  */
+/* Stock kinds                                                        */
 /* ------------------------------------------------------------------ */
 
 /** A shop item's place in the stock: a staple comes back to `qty` on each restock; rotating stock is cleared and drawn
@@ -234,8 +238,8 @@ export function cleanShop(raw) {
 export const STOCK_KINDS = ["staple", "rotating", "sold"];
 
 /**
- * An item's stock flag, cleaned. An item with none is a staple (anything the GM puts in a shop by hand is, a design
- * decision) whose restock quantity is what it has now (`have`).
+ * An item's stock flag, cleaned. An item with none (anything the GM puts in a shop by hand) is a staple whose restock
+ * quantity is what it has now (`have`).
  */
 export function cleanStock(raw, have = 0) {
   const r = raw && typeof raw === "object" ? raw : {};
@@ -267,8 +271,10 @@ export function attitudePct(attitude, pcts, hostileRefuses = true) {
   return Number.isFinite(n) ? Math.max(-100, Math.min(1000, n)) : PRICE_DEFAULTS[a];
 }
 
-/** The price change that applies to an item: treasure (gems, art objects) is never discounted, since shops buy it
- * back at its full value; a markup still applies. Design decision, 10 Nov. */
+/**
+ * The price change that applies to an item: treasure (gems, art objects) is never discounted, since shops buy it back
+ * at its full value; a markup still applies.
+ */
 export const pctFor = (pct, treasure) => (treasure ? Math.max(0, Number(pct) || 0) : Number(pct) || 0);
 
 /** What a buyer pays for a line: the price for the quantity changed by the buyer's percentage. Treasure is never
@@ -276,7 +282,7 @@ export const pctFor = (pct, treasure) => (treasure ? Math.max(0, Number(pct) || 
 export const buyPrice = (cp, per, qty, pct, treasure = false, formula = false) =>
   adjust(priceFor(cp, formula ? 1 : per, formula ? 1 : qty), pctFor(pct, !formula && !!treasure));
 
-/** A price changed by a percentage, rounded up to the copper (never below nothing). */
+/** A price changed by a percentage, rounded up to the copper (never below zero). */
 export const adjust = (cp, pct) => Math.max(0, Math.ceil((Math.max(0, Number(cp) || 0) * (100 + (Number(pct) || 0))) / 100));
 
 /** The rate a shop pays a seller, in percent: its item or treasure rate, but never more than the share of the price
@@ -322,7 +328,7 @@ export function addSale(sales, actor, shop, item, qty, have) {
   return out;
 }
 
-/** Offer `qty` fewer (the line goes at none). */
+/** Offer `qty` fewer (dropped at zero). */
 export function takeSale(sales, actor, item, qty) {
   return cleanSales(sales).map((l) => (l.actor === actor && l.item === item ? { ...l, qty: l.qty - Math.max(0, qty) } : l)).filter((l) => l.qty >= 1);
 }
@@ -349,9 +355,9 @@ export function settle(buys, sales) {
 }
 
 /**
- * Who pays whom in a settled trade. `shopInfo` maps each shop to { unlimited, funds } (copper). Returns `owing` (shops
- * that pay out, [id, cp]; an unlimited purse pays nothing), `receipts` (shops that take in, [id, cp]) and `short`
- * (shops whose purse can't cover what they owe).
+ * Who pays whom in a settled trade. `shopInfo` maps each shop to { unlimited, funds } (copper). Returns `owing`
+ * (shops that pay out, [id, cp]; unlimited purses are left out), `receipts` (shops that take in, [id, cp]) and
+ * `short` (shops whose purse can't cover what they owe).
  */
 export function planTrade(settled, shopInfo) {
   const owing = [], receipts = [], short = [];
@@ -401,7 +407,10 @@ export function addLogEntry(log, entry) {
   return e ? [e, ...list].slice(0, LOG_MAX) : list.slice(0, LOG_MAX);
 }
 
-/** "Dagger priced by hand at 500 gp (its compendium entry: 2 sp)" for the GM's notice and the log. */
+/**
+ * "Dagger priced by hand at 500 gp (its compendium entry: 2 sp)", or "... has no compendium entry; priced at ..."
+ * when `h.source` is missing: for the GM's notice and the log.
+ */
 export function handPricedNote(name, h) {
   const price = (cp, per) => `${formatCp(cp)}${per > 1 ? ` for ${per}` : ""}`;
   return h.source ? `${name} priced by hand at ${price(h.cp, h.per)} (its compendium entry: ${price(h.source.cp, h.source.per)})`
@@ -409,15 +418,16 @@ export function handPricedNote(name, h) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Drawing rotating stock (0.2)                                       */
+/* Drawing rotating stock                                             */
 /* ------------------------------------------------------------------ */
 
-/** The ready filters a shop's rotating stock is drawn with. `scrolls` and `wands` also make spell scrolls and magic wands
- * from the spell list (the caller does that part). Each test reads a compendium index entry. */
+// Index-entry readers for `STOCK_FILTERS`.
 const tr = (e) => e?.system?.traits?.value ?? [];
 const cat = (e) => String(e?.system?.category ?? "");
 const usage = (e) => String(e?.system?.usage?.value ?? "");
 const magical = (e) => tr(e).some((t) => t === "magical" || t === "invested" || t === "arcane" || t === "divine" || t === "occult" || t === "primal");
+/** The ready filters a shop's rotating stock is drawn with. `scrolls` and `wands` also make spell scrolls and magic
+ * wands from the spell list (the caller does that part). */
 export const STOCK_FILTERS = [
   { id: "weapons", label: "Weapons", test: (e) => e.type === "weapon" && e.system?.group !== "bomb" && !tr(e).includes("staff") },
   { id: "armor", label: "Armor", test: (e) => e.type === "armor" },
@@ -464,8 +474,10 @@ export function parseRange(text, fallback = [1, 1], lo = 1, hi = 50) {
 }
 export const rollRange = ([a, b], rand = Math.random) => a + Math.floor(rand() * (b - a + 1));
 
-/** A line of a shop's rotating stock: { filter, amount (a size or 1 to 50), rarity (how rare it may draw) }. 12 at
- * most. Lines saved by earlier builds ({ count, uncommon }) read the same. */
+/**
+ * A line of a shop's rotating stock: { filter, amount (a size or 1 to 50), rarity (how rare it may draw) }, 12 at
+ * most. The legacy form { count, uncommon } is read too.
+ */
 export const MAX_STOCK_LINES = 12;
 export function cleanStockLines(raw) {
   const out = [];
@@ -487,7 +499,10 @@ export function lineCount(line, ranges = AMOUNT_DEFAULTS, rand = Math.random) {
   return rollRange(parseRange(ranges[line.amount], parseRange(AMOUNT_DEFAULTS[line.amount] ?? "3-6")), rand);
 }
 
-/** Can an index entry be drawn at all: a price, not unique or cursed, not a spell template. (A line decides how rare.) */
+/**
+ * Can an index entry be drawn at all: priced, and not unique, cursed, an artifact or a spell template (the line
+ * decides rarity).
+ */
 export function drawable(e, templates = new Set()) {
   const rarity = e?.system?.traits?.rarity ?? "common";
   if (rarity === "unique") return false;
@@ -499,13 +514,16 @@ export function drawable(e, templates = new Set()) {
 }
 export const entryLevel = (e) => Math.max(0, Number(e?.system?.level?.value ?? 0) || 0);
 
-/** How likely a level is to be drawn, leaning to the shop's level: each level below it is about two thirds as likely
- * as the one above (design decision: most draws near the shop's level, a few lower). */
+/**
+ * How likely a level is to be drawn, leaning to the shop's level: each level below it is 0.62 times as likely as the
+ * one above, so most draws land near the shop's level and a few lower.
+ */
 export const levelWeight = (level, max) => Math.pow(0.62, Math.max(0, max - level));
 
 /**
- * Draw `count` different entries for one line: a level first (weighted, among levels that have something), then an
- * entry at that level. `pool` is the line's entries already filtered; `rand` returns [0, 1). Never more than the pool has.
+ * Draw `count` different entries for one line: a level no higher than `maxLevel` first (weighted, among levels that
+ * have something), then an entry at that level. `pool` is the line's entries already filtered; `rand` returns [0, 1).
+ * Never more than the pool has.
  */
 export function drawEntries(pool, count, maxLevel, rand = Math.random) {
   const byLevel = new Map();
@@ -535,8 +553,10 @@ export function drawEntries(pool, count, maxLevel, rand = Math.random) {
 export const stacks = (e) => (e?.type === "consumable" && e?.system?.category !== "wand") || e?.type === "ammo" || (e?.type === "weapon" && e?.system?.group === "bomb");
 export const drawnQty = (e, rand = Math.random, stack = [1, 4]) => (stacks(e) ? rollRange(stack, rand) : 1);
 
-/** Can a spell (an index entry of the spell list) go on a scroll or in a wand: not a cantrip, focus spell or ritual,
- * and no rarer than the line allows (`upTo`: common, uncommon or rare; true means uncommon, as earlier builds). */
+/**
+ * Can a spell (an index entry of the spell list) go on a scroll or in a wand: not a cantrip, focus spell or ritual,
+ * and no rarer than the line allows (`upTo`: common, uncommon or rare; the legacy value true means uncommon).
+ */
 export function scribable(e, upTo = "common") {
   const t = tr(e);
   if (t.includes("cantrip") || t.includes("focus")) return false;
@@ -573,7 +593,7 @@ export function drawSpells(spells, ranks, count, maxLevel, rand = Math.random) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Restocking (0.2)                                                   */
+/* Restocking                                                         */
 /* ------------------------------------------------------------------ */
 
 /**
@@ -601,8 +621,10 @@ export function restockPlan(items, { keepSold = false } = {}) {
  * the first check (returns false, and the caller notes the time). */
 export const restockDue = (every, last, now) => every > 0 && last !== null && Number.isFinite(last) && now - last >= every * 86400;
 
-/** A formula's uuid in one form, so old and new compendium links match: `Compendium.<pack>.Item.<id>` (older items say
- * `Compendium.<pack>.<id>`). Anything else is kept as it is; no uuid gives null. */
+/**
+ * A formula's uuid in one form, `Compendium.<pack>.Item.<id>`, so both compendium uuid forms match (some items say
+ * `Compendium.<pack>.<id>`). Anything else is kept as it is; no uuid gives null.
+ */
 export function formulaKey(uuid) {
   if (!uuid) return null;
   const parts = String(uuid).split(".");
@@ -610,8 +632,10 @@ export function formulaKey(uuid) {
   return `Compendium.${parts[1]}.${parts[2]}.Item.${parts[parts.length - 1]}`;
 }
 
-/** A compendium source as a key that matches old and new forms ("Compendium.pack.ID" and "Compendium.pack.Item.ID"):
- * the pack and the document id. */
+/**
+ * A compendium source as a key (the pack and the document id) that matches both uuid forms, "Compendium.pack.ID" and
+ * "Compendium.pack.Item.ID"; null for anything that isn't a compendium uuid.
+ */
 export function sourceKey(uuid) {
   const parts = String(uuid ?? "").split(".");
   if (parts[0] !== "Compendium" || parts.length < 4) return null;
@@ -619,15 +643,15 @@ export function sourceKey(uuid) {
 }
 
 /* ------------------------------------------------------------------ */
-/* The Trade Post (0.3)                                               */
+/* The Trade Post                                                     */
 /* ------------------------------------------------------------------ */
 
-/** Offers a character can have up at once, and in all. */
+/** Most offers one character can have up at once (MAX_OFFERS_EACH), and most in all, across everyone (MAX_OFFERS). */
 export const MAX_OFFERS_EACH = 10;
 export const MAX_OFFERS = 100;
 const MAX_OFFER_ITEMS = 20;
 
-/** Coins as copper: { gp, sp, cp } (or a number) to a whole number of copper, 0 to a million gold. */
+/** Coins as copper: { pp, gp, sp, cp } (or a number) to a whole number of copper, 0 to a million gold. */
 export function coinsCp(c) {
   if (typeof c === "number") return Math.max(0, Math.min(100000000, Math.round(c) || 0));
   const n = (Number(c?.pp) || 0) * 1000 + (Number(c?.gp) || 0) * 100 + (Number(c?.sp) || 0) * 10 + (Number(c?.cp) || 0);
@@ -696,7 +720,7 @@ export const canAccept = (offer, actorId) => !!offer && !!actorId && offer.from 
 export const offerNet = (offer) => coinsCp(offer?.want?.cp) - coinsCp(offer?.give?.cp);
 
 /* ------------------------------------------------------------------ */
-/* Formulas (0.4)                                                     */
+/* Formulas                                                           */
 /* ------------------------------------------------------------------ */
 
 /** A common formula's price in gold by item level, 0 to 20 (the rules' Formula Price table). */

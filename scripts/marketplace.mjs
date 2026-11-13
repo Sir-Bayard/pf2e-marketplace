@@ -24,10 +24,10 @@ const TextEditor = () => foundry.applications.ux.TextEditor.implementation;
 /* Window memory                                                      */
 /* ------------------------------------------------------------------ */
 
-/* The same code in each of Sir Bayard's modules. A window made with rememberWindow keeps the size and place the user
+/* The same code as in the author's other modules. A window made with rememberWindow keeps the size and place the user
  * gives it, in this browser, and comes back from minimized whole: Foundry's restore animation can stall at the title
- * bar's height (seen on 14.370, core windows too) and Foundry sets the size while it runs, so a restored window came
- * back as a strip. */
+ * bar's height (seen on Foundry 14.370, in core windows too) and Foundry sets the size while it runs, so without this a
+ * restored window comes back as a strip. */
 
 /** Wait for an element's own transitions to end; a hidden tab pauses them, so after a second they're finished by hand. */
 async function settleWindow(el) {
@@ -171,8 +171,8 @@ const store = () => cleanStore(game.settings.get(MOD, "store"));
 const marketsSorted = () => store().markets.sort(byMarketOrder);
 const marketById = (id) => store().markets.find((m) => m.id === id) ?? null;
 
-/** Change the store (GMs only). Writes run one after another, each on the latest copy. */
 let writing = Promise.resolve();
+/** Change the store (GMs only). Writes run one after another, each on the latest copy. */
 function mutate(fn) {
   if (!game.user.isGM) return Promise.resolve(false);
   writing = writing.then(async () => {
@@ -204,8 +204,10 @@ const shopsFor = (market) => shopsOf(market, actorRows(), parentOf, game.user.is
 function tradeMarketFor(shopId, user, rows = actorRows()) {
   return store().markets.find((m) => shopsOf(m, rows, parentOf, user.isGM).some((s) => s.id === shopId && canTradeShop(m, s, user.isGM))) ?? null;
 }
-/** Formulas (0.4): a shop item marked as a formula sells a copy of the formula at the formula price for its level and
- * rarity (or the GM's own price); the shop keeps it. */
+/**
+ * A shop item marked as a formula sells a copy of the formula at the formula price for its level and rarity (or the
+ * GM's own price); the shop keeps it.
+ */
 const formulaMults = () => ({ uncommon: Number(game.settings.get(MOD, "formula-uncommon")), rare: Number(game.settings.get(MOD, "formula-rare")) });
 const isFormulaItem = (item) => !!cleanStock(item?.flags?.[MOD]?.stock).formula;
 const itemLevel = (item) => Number(item?.level ?? item?.system?.level?.value ?? 0) || 0;
@@ -238,9 +240,8 @@ const ATTITUDES_MOD = "pf2e-npc-attitudes";
  * The attitude that sets a buyer's prices. With PF2e NPC Attitudes on and a shopkeeper who has a record there:
  * - the party sees their true attitude ("shown" is "same"): that attitude, or the one toward this character if set;
  * - the party is shown the true attitude picked by hand: that attitude (per-character ones aren't shown then);
- * - the party is shown something else (a disguise, or Unknown): Indifferent, normal prices (design decision, 9 Nov),
- *   so a secretly hostile merchant still trades and a pretended friend gives no discount. (A missing discount is a
- *   soft tell; accepted.)
+ * - the party is shown something else (a disguise, or Unknown): Indifferent, normal prices, so a secretly hostile
+ *   merchant still trades and a pretended friend gives no discount (a missing discount is a soft tell).
  * Otherwise the shop's own setting. The record is read straight from the actor, the same way on every client, so a
  * player sees the price the GM's client will charge.
  */
@@ -251,7 +252,6 @@ function attitudeInfo(shop, buyer) {
   const own = rec && buyer && buyer.type === "character" ? rec.pcs?.[buyer.id] : null;
   if (rec && (ATTITUDES.includes(rec.attitude) || ATTITUDES.includes(own))) {
     const shown = rec.shown ?? "same";
-    // Shown as it is: the attitude toward this character if set (players see those too), else the general one.
     if (shown === "same") return { attitude: ATTITUDES.includes(own) ? own : ATTITUDES.includes(rec.attitude) ? rec.attitude : conf.attitude, real: rec.attitude ?? own, masked: false };
     if (shown === rec.attitude) return { attitude: rec.attitude, real: rec.attitude, masked: false };
     return { attitude: "indifferent", real: rec.attitude, shown, masked: true };
@@ -262,8 +262,10 @@ const attitudeFor = (shop, buyer) => attitudeInfo(shop, buyer).attitude;
 const pricePcts = () => Object.fromEntries(ATTITUDES.map((a) => [a, game.settings.get(MOD, `price-${a}`)]));
 /** The price change for this buyer at this shop in percent, or null when the shop won't trade with them. */
 const pricePct = (shop, buyer) => attitudePct(attitudeFor(shop, buyer), pricePcts(), game.settings.get(MOD, "hostileRefuses"));
-/** Who the shop is, for "won't trade" lines: the shopkeeper's name if there is one, as `user` knows it (a player
- * gets the name on the token, never the actor's real name). */
+/**
+ * Who the shop is, for "won't trade" lines: the shopkeeper's name if there is one, as `user` knows it (a player gets
+ * the name the keeper goes by, never the actor's real name).
+ */
 function shopFace(shop, user = game.user) {
   const keeper = shopConf(shop).keeper ? game.actors.get(shopConf(shop).keeper) : null;
   return keeperFace(keeper, user.isGM)?.name ?? shop?.name ?? "The shop";
@@ -288,8 +290,8 @@ async function fillPurse(shop, market = marketOfShop(shop.id)) {
   return Math.max(0, add);
 }
 
-/** Add a trade to the log (GM clients only; one write at a time). */
 let logWrites = Promise.resolve();
+/** Add a trade to the log (GM clients only; one write at a time). */
 function logTrade(entry) {
   if (!game.user.isGM) return;
   logWrites = logWrites.then(() => game.settings.set(MOD, "log", addLogEntry(game.settings.get(MOD, "log"), { t: Date.now(), ...entry })))
@@ -321,7 +323,7 @@ function saveCart(cart) {
   }
 }
 
-/** The actors this user can buy for, and the one chosen (their own character first). */
+/** The actors this user can buy for, and the one chosen (the cart's choice, else their own character). */
 function buyerChoices(cart) {
   const list = buyersFor(game.user, game.actors.contents).sort((a, b) => (a.type === "party") - (b.type === "party") || a.name.localeCompare(b.name));
   const chosen = list.find((a) => a.id === cart.buyer) ?? list.find((a) => a.id === game.user.character?.id) ?? list[0] ?? null;
@@ -529,9 +531,9 @@ async function putBack(taken) {
 }
 
 /**
- * Make a trade (on the GM's client, or a GM's own): the trader buys `lines` and sells `sales`. Everything is checked
- * before anything moves: the trader is the sender's, each shop is open to them (and buys from customers, for a sale),
- * each item is there in that quantity, the totals match what the trader saw, and the money is there. Sales settle with
+ * Make a trade on the primary GM's client: the trader buys `lines` and sells `sales`. Everything is checked before
+ * anything moves: the trader is the sender's, each shop is open to them (and buys from customers, for a sale), each
+ * item is there in that quantity, the totals match what the trader saw, and the money is there. Sales settle with
  * purchases, so at each shop only the difference changes hands, and the trader pays (or gets) only the difference.
  */
 async function processTrade(msg, sender) {
@@ -596,10 +598,11 @@ async function processTrade(msg, sender) {
     if (h) notes.set(x.shop, [...(notes.get(x.shop) ?? []), handPricedNote(x.name, h)]);
   }
 
-  // The copies are made before anything changes. Then: the shops' stock and the trader's goods come out (checked again
-  // against what's there now), the shops that owe pay, the trader pays, the trader gets what they bought, the shops get
-  // what they bought. A step that fails undoes the ones before it, deliveries included. After that the trade stands;
-  // the money still to go in is paid, and a payment that fails is noted for the GM rather than undoing the trade.
+  // The copies are made before anything changes. Then: the shops' stock and the trader's goods come out (checked
+  // again against what's there now), the shops that owe pay, the trader pays, the trader gets what they bought, the
+  // shops get what they bought, the trader learns any formulas. A step that fails undoes the ones before it,
+  // deliveries included. After that the trade stands; the money still to go in is paid, and a payment that fails is
+  // noted for the GM rather than undoing the trade.
   const boughtCopies = buys.map((b) => (b.formula ? parchmentData(realItem(b.item).name, b.uuid) : boughtCopy(b.item, b.qty)));
   const learned = buys.filter((b) => b.formula).map((b) => b.uuid);
   const soldCopies = sold.map((x) => ({ shop: x.shopDoc, data: soldCopy(x.item, x.qty, MOD, x.conf.keepSold) }));
@@ -759,7 +762,7 @@ function clearTraded(lines, sales) {
 }
 
 /* ------------------------------------------------------------------ */
-/* The Trade Post (0.3): offers between players' characters           */
+/* The Trade Post: offers between players' characters                 */
 /* ------------------------------------------------------------------ */
 
 const offers = () => cleanOffers(game.settings.get(MOD, "offers"));
@@ -774,7 +777,7 @@ function mutateOffers(fn) {
   offerWrites = run.catch(() => null);
   return run;
 }
-/** Characters a user can trade for at the Trade Post: their characters, never the party stash (a design decision). */
+/** Characters a user can trade for at the Trade Post: their characters, never the party stash. */
 const tradersFor = (user) => buyersFor(user, game.actors.contents).filter((a) => a.type === "character");
 /** A request: an offer that gives nothing and asks for something. */
 const isRequest = (o) => !o.give.items.length && !o.give.cp;
@@ -806,8 +809,10 @@ function offerProblem(offer, taker) {
   return null;
 }
 
-/** Post an offer (the GM's client): the poster's own character, items that are theirs to trade, a target that's a
- * player's character, at most 10 offers per character. */
+/**
+ * Post an offer (the GM's client): the poster's own character, items that are theirs to trade, a target that's a
+ * player's character, at most MAX_OFFERS_EACH offers per character and MAX_OFFERS in all.
+ */
 async function processPost(msg, sender) {
   const o = cleanOffer({ ...msg.offer, id: foundry.utils.randomID(16), user: sender.id, created: Date.now() });
   if (!o) throw new Refused("an offer needs something offered or asked for (a gift of coins alone isn't an offer).");
@@ -849,8 +854,10 @@ async function processWithdraw(msg, sender) {
   return { text: "The offer is down." };
 }
 
-/** An item's data as it moves between characters: the quantity, out of any container, carried, the module's marks
- * dropped. Identification stays as it was. */
+/**
+ * An item's data as it moves between characters: the quantity, out of any container, carried (carry type "worn", not
+ * in a slot), the module's marks dropped. Identification stays as it was.
+ */
 function tradeCopy(item, qty) {
   const data = item.toObject();
   delete data._id;
@@ -924,8 +931,8 @@ async function processAccept(msg, sender) {
   return { text: text + (unpaid ? " Part of the money didn't arrive; the GM has been told." : ""), unpaid };
 }
 
-/** A Trade Post request: the primary GM acts at once; anyone else asks the GM's client. */
 let posting = false;
+/** A Trade Post request: the primary GM acts at once; anyone else asks the GM's client. */
 async function postRequest(msg) {
   if (posting || waitingFor(msg.type)) return;
   if (isPrimaryGM()) {
@@ -1009,10 +1016,13 @@ function onSocket(msg, senderId) {
   refresh();
 }
 
-/** Make the trade in the cart: a GM at once; a player asks the GM's client. */
+/** A trade from this client is under way. */
 let trading = false;
-/** `seen` is { buy, sell } as the Pay button showed them: a cart changed since (a quantity typed a moment ago) isn't
- * traded until the player has seen the new total. */
+/**
+ * Make the trade in the cart: a GM at once; a player asks the GM's client. `seen` is { buy, sell } as the Pay button
+ * showed them: a cart changed since (a quantity typed a moment ago) isn't traded until the player has seen the new
+ * total.
+ */
 async function checkout(seen = null) {
   if (busy()) return;
   const cart = loadCart();
@@ -1499,7 +1509,6 @@ class MarketApp extends Base {
     const list = offers();
     const mine = new Set(traders.map((a) => a.id));
     const chip = (l) => `<span class="pmk-chip"><img src="${esc(l.img)}" alt="">${esc(l.name)}${l.qty > 1 ? ` ×${l.qty}` : ""}</span>`;
-    // Offers for the character trading, open to them, theirs or another of the user's (a GM sees them all below).
     const side = (s) => [...s.items.map(chip), s.cp ? `<span class="pmk-chip pmk-coins"><i class="fa-solid fa-coins"></i>${esc(formatCp(s.cp))}</span>` : ""].join("") || `<span class="pmk-dim">nothing</span>`;
     const card = (o) => {
       const from = game.actors.get(o.from);
@@ -1565,7 +1574,10 @@ class MarketApp extends Base {
     </div>`;
   }
 
-  /** Read the new offer's form into the view. */
+  /**
+   * `#readDraft` reads the new offer's form into the view; `#draftSkip` skips that once, right after the form changed
+   * who the offer is for.
+   */
   #draftSkip = false;
   #readDraft() {
     const d = this.view.draft;
@@ -1994,7 +2006,7 @@ class MarketApp extends Base {
     this.render();
   }
 
-  /** GM: swap an item between staple and rotating (a staple restocks to what it has now, or 1). */
+  /** GM: swap an item between staple and rotating (a sold item becomes a staple). */
   static async #onKind(event, target) {
     if (!this.isGM) return;
     const item = game.actors.get(this.view.shop)?.items.get(target.dataset.id);
@@ -2418,18 +2430,17 @@ class MarketApp extends Base {
   }
 }
 
-/** The GM's form for a shop's settings. */
 /**
  * Draw a shop's rotating stock from its lines: item data ready to create, marked rotating. Levels lean to the shop's
- * level; nothing the shop already stocks (by compendium source) or already drawn; scrolls and some wands are made from
- * the spell list. Returns [{ data, filter }].
+ * level; nothing the shop already stocks (by compendium source) or already drawn; scrolls and some wands are made
+ * from the spell list. Returns [{ data, filter, formula }].
  */
 async function drawStock(shop, market, lines = shopConf(shop).lines, ignore = new Set()) {
   const maxLevel = Math.max(0, shopLevel(shop, market));
   const index = await equipmentIndex();
   const templates = await spellTemplates();
   const templateIds = new Set([...templates.scroll.values(), ...templates.wand.values()].map((t) => t.uuid));
-  // What the shop has: items by compendium source, scrolls and wands by kind and spell (old and new source forms match).
+  // What the shop has: items by compendium source, scrolls and wands by kind and spell (both uuid forms match).
   const seen = new Set();
   for (const i of shop.items) {
     if (ignore.has(i.id)) continue;
@@ -2520,8 +2531,10 @@ async function drawStockDialog(shop, market) {
 const flagOf = (shop, key) => shop?.flags?.[MOD]?.[key];
 /** Can players trade at this shop right now (in any market that holds it)? */
 const openToPlayers = (shop) => store().markets.some((m) => m.visible && m.open && shopsOf(m, actorRows(), parentOf, false).some((s) => s.id === shop.id && !s.closed));
-/** What players last saw: a shop that stops trading notes its rotation count, so a browse-only view knows whether the
- * stock has changed since (design decision 13). */
+/**
+ * What players last saw: a shop that stops trading notes its rotation count, so a browse-only view knows whether the
+ * stock has changed since.
+ */
 async function noteSeen(shops) {
   for (const shop of shops) {
     const n = Number(flagOf(shop, "rotations")) || 0;
@@ -2535,9 +2548,10 @@ const remembered = (shop) => flagOf(shop, "seenRotation") === (Number(flagOf(sho
 const planItems = (shop) => stockRows(shop).map((r) => ({ id: r.id, qty: r.qty, stock: r.stock }));
 
 /**
- * Restock a shop (GM): staples back to their number, rotating stock cleared and drawn again from the shop's lines, sold
- * items counted down, the purse filled. A restock is a rotation; a shop open to players right then is one they've seen.
- * Returns what changed.
+ * Restock a shop (GM): unmarked items marked as staples, staples back to their number, rotating stock cleared and
+ * (with `opts.draw`) drawn again from the shop's lines, sold items counted down (not with `opts.keepSold`), the purse
+ * filled. A restock is a rotation; a shop open to players right then is one they've seen. Returns { refilled,
+ * cleared, aged, drawn, filled }.
  */
 function restockShop(shop, market, opts = {}) {
   // In the trade queue, so a restock never runs in the middle of a trade with this shop.
@@ -2608,8 +2622,10 @@ async function restockMarket(market, opts) {
   return shops.length - failed.length;
 }
 
-/** Give each shop item with no stock mark its staple mark, of what it has now (0.1.0 stock, duplicated or imported
- * merchants, items made before this module saw them), and identify anything unidentified. */
+/**
+ * Give each shop item with no stock mark its staple mark, of what it has now (duplicated or imported merchants, items
+ * added while the module was off or that predate stock marks), and identify anything unidentified.
+ */
 async function markStaples(shops) {
   for (const shop of shops) {
     const updates = [];
@@ -2624,9 +2640,9 @@ async function markStaples(shops) {
   }
 }
 
+let restocking = false;
 /** Timed restocks: on the primary GM's lead tab, a market whose interval has passed in game time restocks all its shops
  * once (however much time passed). A market that has never restocked starts its clock at the first check. */
-let restocking = false;
 async function checkSchedules() {
   if (restocking || !iAmLeader()) return;
   restocking = true;
@@ -2648,7 +2664,7 @@ async function checkSchedules() {
   }
 }
 
-/** The rows of the rotating stock lines in the settings dialog. */
+/** Option lists and the row for a rotating stock line in the shop settings dialog. */
 const filterOptions = (sel) => STOCK_FILTERS.map((f) => `<option value="${f.id}" ${f.id === sel ? "selected" : ""}>${esc(f.label)}</option>`).join("");
 const amountOptions = (sel) => {
   const sizes = AMOUNTS.map((a) => `<option value="${a}" ${a === sel ? "selected" : ""}>${AMOUNT_LABEL[a]} (${esc(game.settings.get(MOD, `amount-${a}`))})</option>`);
@@ -2665,6 +2681,7 @@ const stockLineHTML = (l = { filter: "weapons", amount: "some", rarity: "common"
   <button type="button" class="pmk-sline-x" data-tooltip="Remove"><i class="fa-solid fa-xmark"></i></button>
 </div>`;
 
+/** The GM's form for a shop's settings. */
 async function shopSettingsDialog(shop, market) {
   const c = shopConf(shop);
   const keeper = c.keeper ? game.actors.get(c.keeper) : null;
@@ -2867,8 +2884,8 @@ for (const hook of ["createActor", "updateActor", "deleteActor"]) Hooks.on(hook,
 // Shops' stock, and the money and goods of anyone this user buys for (the cart shows what they have).
 const watched = (a) => lootActor(a) || ((a?.type === "character" || a?.type === "party") && a.isOwner);
 for (const hook of ["createItem", "updateItem", "deleteItem"]) Hooks.on(hook, (item) => watched(item.parent) && refresh());
-// Anything put in a merchant without a stock mark (the GM dragging it in, or PF2e's own sheet) is a staple that comes back
-// to its quantity on a restock, a design decision. Set on the creating client, before the item exists.
+// Anything put in a merchant without a stock mark (the GM dragging it in, or PF2e's own sheet) is a staple that comes
+// back to its quantity on a restock. Set on the creating client, before the item exists.
 Hooks.on("preCreateItem", (item, data) => {
   if (!isMerchant(item.parent)) return;
   // Shops sell identified goods: an unidentified item put in a shop is identified there.
@@ -2882,7 +2899,7 @@ Hooks.on("updateActor", (a, change) => a?.type === "npc" && change?.flags?.["pf2
 Hooks.on("userConnected", () => refresh());
 Hooks.on("updateWorldTime", () => checkSchedules());
 Hooks.once("ready", () => setTimeout(async () => {
-  // 0.1.0 stock and merchants made elsewhere: every unmarked shop item becomes a staple of what it has.
+  // Merchants stocked elsewhere or while the module was off: every unmarked shop item becomes a staple.
   if (iAmLeader()) {
     const shops = [...new Set(store().markets.flatMap((m) => shopsFor(m).map((s) => s.id)))].map((id) => game.actors.get(id)).filter(isMerchant);
     await markStaples(shops).catch((err) => console.error(`${MOD} | marking staples failed`, err));

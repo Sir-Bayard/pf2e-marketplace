@@ -20,8 +20,10 @@ const isPhysical = (item) => (typeof item?.isOfType === "function" ? item.isOfTy
 /** Coins are treasure items with category "coin" (`isCoinage`); they're the shop's money, not its stock. */
 const isCoins = (item) => !!item?.isCoinage || (item?.type === "treasure" && item.system?.category === "coin");
 
-/** An item as a shop sells it: always the real, identified item (shops sell identified goods, a design decision), read
- * from its source data so PF2e's mystified name and picture for an unidentified item don't show through. */
+/**
+ * An item as a shop sells it: always the real, identified item (shops sell identified goods), read from its source
+ * data so PF2e's mystified name and picture for an unidentified item don't show through.
+ */
 export function realItem(item) {
   const src = item?._source ?? {};
   return {
@@ -65,7 +67,7 @@ export function stockRows(actor) {
       per,
       holds,
       inside: !!item.system?.containerId,
-      // Shown and sold identified; the GM sees a note that the sheet has it unidentified.
+      // Whether the sheet has it identified (the window doesn't read this; shops show and sell items identified).
       identified: item.isIdentified !== false,
       // The module's stock mark (staple, rotating, sold), raw; cleaned by the caller.
       stock: item.flags?.[MOD_ID]?.stock ?? null,
@@ -129,7 +131,7 @@ export function boughtCopy(item, qty) {
   data.system.quantity = qty;
   data.system.containerId = null;
   if (data.system.identification) data.system.identification.status = "identified";
-  // The module's own marks (a sold item's rotation count) stay with the shop.
+  // The module's own marks (the item's stock mark) stay with the shop.
   if (data.flags?.[MOD_ID]) delete data.flags[MOD_ID];
   const worn = item.system?.usage?.type === "worn" && item.system?.usage?.where;
   data.system.equipped = worn ? { carryType: "worn", inSlot: false } : { carryType: "worn" };
@@ -179,8 +181,8 @@ export const isTreasure = (item) => item?.type === "treasure" && !isCoins(item);
 
 /**
  * What a character can offer a shop, as plain rows: every physical item but coins. `why` says why one can't be sold
- * (unidentified items must be identified first, a design decision; a container must be emptied first; a temporary
- * item, or one a feature or effect granted, isn't the character's to sell).
+ * (unidentified items must be identified first; a temporary item, or one a feature or effect granted, isn't the
+ * character's to sell; a container must be emptied first; a formula's parchment isn't bought).
  */
 export function sellRows(actor) {
   const out = [];
@@ -213,8 +215,10 @@ export function tradeRows(actor) {
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
 
-/** Can this item be sold to a shop now? Something worth nothing sells for nothing (a design decision: a way to get rid
- * of things while shopping). */
+/**
+ * Can this item be sold to a shop now? Something worth nothing can still be sold, for nothing, as a way to get rid of
+ * things while shopping.
+ */
 export const canSellToShop = (item) => !!item && isPhysical(item) && !isCoins(item) && item.isIdentified !== false && !granted(item) && !isParchment(item)
   && !(item.type === "backpack" && (item.contents?.size ?? 0) > 0);
 /** A temporary item (`system.temporary`), or one granted by a feat, feature or effect (`flags.pf2e.grantedBy`). */
@@ -222,8 +226,10 @@ function granted(item) {
   return !!item?.system?.temporary || !!item?.flags?.pf2e?.grantedBy;
 }
 
-/** The data for an item a shop bought: the quantity sold, out of any container, unequipped, marked as sold to the shop
- * for `left` more restocks (flag `stock`). */
+/**
+ * The data for an item a shop bought: the quantity sold, out of any container, unequipped, with any temporary or
+ * granted mark dropped, and marked as sold to the shop for `left` more restocks (flag `stock`).
+ */
 export function soldCopy(item, qty, mod, left = 2) {
   const data = item.toObject();
   delete data._id;
@@ -243,8 +249,11 @@ export const setLevel = (actor, level) => actor.update({ "system.details.level.v
 
 /** Art that came with a stat block (the system's, core's or a token pack's): its path can name the real creature. */
 const SHIPPED_ART = /^(?:systems\/pf2e\/|modules\/(?:pf2e-tokens-|pathfinder-tokens|pf2e-bestiary-|pf2e-monster-core|pf2e-npc-core)|icons\/)/i;
-/** A shopkeeper as players know them: the name they go by (PF2e NPC Attitudes' "known as", else the token's name) and
- * the picture players get there (its portrait, else the actor's art unless it came with a stat block, else the token). */
+/**
+ * A shopkeeper as players know them: the name they go by (PF2e NPC Attitudes' "known as", else the token's name; a GM
+ * sees the actor's name) and the picture players get there (its portrait, else the actor's art unless it came with a
+ * stat block, else the token).
+ */
 export function keeperFace(actor, isGM) {
   if (!actor) return null;
   const rec = actor.flags?.["pf2e-npc-attitudes"]?.npc ?? {};
@@ -280,7 +289,7 @@ export async function handPriced(item) {
 }
 
 /* ------------------------------------------------------------------ */
-/* The compendium, for drawing stock (0.2)                            */
+/* The compendium, for drawing stock                                  */
 /* ------------------------------------------------------------------ */
 
 const EQUIPMENT_PACK = "pf2e.equipment-srd";
@@ -297,7 +306,7 @@ export async function equipmentIndex() {
   return equipmentCache;
 }
 
-/** The system's spells as index entries (rank, traits, rarity, ritual). */
+/** The system's spells as index entries (rank, traits, rarity, traditions, ritual). */
 export async function spellIndex() {
   if (spellCache) return spellCache;
   const pack = game.packs.get(SPELL_PACK);
@@ -350,7 +359,7 @@ export async function spellItemData(kind, templateUuid, spellUuid, rank) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Formulas (0.4)                                                     */
+/* Formulas                                                           */
 /* ------------------------------------------------------------------ */
 
 /** The formula an item stands for, in one form (`formulaKey`): its compendium entry (`_stats.compendiumSource`, or the
@@ -366,7 +375,6 @@ export function formulaUuid(item) {
 /** The formulas a character knows (`system.crafting.formulas`: their own and any a rule element grants), as keys. */
 const knownFormulas = (actor) => [...(actor?._source?.system?.crafting?.formulas ?? []), ...(actor?.system?.crafting?.formulas ?? [])]
   .map((f) => formulaKey(f?.uuid)).filter(Boolean);
-/** Does a character know a formula? */
 export const knowsFormula = (actor, uuid) => !!uuid && knownFormulas(actor).includes(formulaKey(uuid));
 
 /** Add formulas to a character's Crafting tab. Returns what was there before, for undoing. */
@@ -377,7 +385,7 @@ export async function addFormulas(actor, uuids) {
   if (add.length) await actor.update({ "system.crafting.formulas": [...before, ...add] });
   return before;
 }
-/** Put a character's formulas back as they were. */
+/** Put a character's formulas back to what `addFormulas` returned. */
 export const restoreFormulas = (actor, before) => actor.update({ "system.crafting.formulas": before });
 
 /** The parchment a bought formula comes on: an item with no Bulk and no price (it's the record; the knowledge is on the
