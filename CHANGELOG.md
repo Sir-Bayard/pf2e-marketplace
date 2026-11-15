@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.1
+
+Fixes.
+
+- **Attached parts are priced in**: an item's price includes what's attached to it (a shield's spikes, a crossbow's attachment, loaded ammunition), as the character sheet counts its worth, when buying and selling. An item that carries parts trades as its whole stack, in shops and at the Trade Post, and is never stacked onto another. A part priced by hand is flagged for the GM like the item itself.
+- A Trade Post offer whose item was used or changed after it went up (a charge spent, damage, an edit) can't be accepted until it's posted again. Offers posted before a PF2e update fall back to the earlier check.
+- A staple's restock number changes only when the GM sets it (right-click its mark) or drags more onto the shop; a quantity changed on the merchant's sheet, or items moved onto it by other means, no longer raise it.
+- A trade writes the trade log once, and only a GM's window showing the log redraws for it.
+- Fill purse's amount follows a change to the purse size setting at once.
+- Trade answers are taken only from the GM's client that was asked, or the primary GM's.
+
 ## 0.5.0
 
 Requests.

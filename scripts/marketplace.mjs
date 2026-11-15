@@ -11,7 +11,7 @@ import {
 } from "./helpers.mjs";
 import {
   isMerchant, actorLevel, stockRows, descriptionOf, merchantData, realItem, priceOf, sellable, quantityOf, fundsCp, pay, receive,
-  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPriced, tradeRows, formulaUuid, knowsFormula, addFormulas, restoreFormulas, parchmentData, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
+  boughtCopy, giveItems, takeFromStock, buyersFor, sellRows, canSellToShop, soldCopy, setLevel, keeperFace, isTreasure, handPricedParts, hasParts, itemPrint, tradeRows, formulaUuid, knowsFormula, addFormulas, restoreFormulas, parchmentData, equipmentIndex, spellIndex, spellTemplates, itemFromEntry, spellItemData,
 } from "./pf2e.mjs";
 
 const MOD = "pf2e-marketplace";
@@ -291,10 +291,12 @@ async function fillPurse(shop, market = marketOfShop(shop.id)) {
 }
 
 let logWrites = Promise.resolve();
-/** Add a trade to the log (GM clients only; one write at a time). */
-function logTrade(entry) {
-  if (!game.user.isGM) return;
-  logWrites = logWrites.then(() => game.settings.set(MOD, "log", addLogEntry(game.settings.get(MOD, "log"), { t: Date.now(), ...entry })))
+/** Add entries to the log (GM clients only; one write at a time, all of a trade's entries in one, since every client
+ * is sent the whole log on each write). */
+function logTrade(...entries) {
+  if (!game.user.isGM || !entries.length) return;
+  const t = Date.now();
+  logWrites = logWrites.then(() => game.settings.set(MOD, "log", entries.reduce((log, e) => addLogEntry(log, { t, ...e }), game.settings.get(MOD, "log"))))
     .catch((err) => console.warn(`${MOD} | couldn't write the trade log`, err));
 }
 
@@ -357,6 +359,7 @@ function cartState(lines, buyer, rows = actorRows()) {
     else if (pct === null) problem = `${shopFace(shop)} won't trade with ${buyer?.name ?? "you"}.`;
     else if (formula && l.qty > 1) problem = "One copy only.";
     else if (stock < l.qty) problem = stock ? `Only ${stock} left.` : "Sold out.";
+    else if (!formula && hasParts(item) && l.qty !== stock) problem = `It has attached parts: all ${stock} or none.`;
     if (uuid) formulas.add(uuid);
     return { ...l, shopDoc: shop, itemDoc: item, formula, stock, cp, per, pct: pct ?? 0, price: buyPrice(cp, per, l.qty, pct ?? 0, isTreasure(item), formula), market, problem };
   });
@@ -383,6 +386,7 @@ function saleState(sales, trader, actors = actorRows()) {
     else if (!conf.buys) problem = `${shop.name} doesn't buy from customers.`;
     else if (pct === null) problem = `${shopFace(shop)} won't trade with ${trader?.name ?? "you"}.`;
     else if (row.qty < l.qty) problem = `${trader.name} has only ${row.qty}.`;
+    else if (row.parts && l.qty !== row.qty) problem = `It has attached parts: all ${row.qty} or none.`;
     return { ...l, shopDoc: shop, row, conf, offer, market, problem };
   });
 }
@@ -442,9 +446,10 @@ function askGM(msg) {
     return false;
   }
   const rid = foundry.utils.randomID(16);
-  pending.set(rid, { kind: msg.type, timer: setTimeout(() => {
+  const gm = game.users.activeGM.id;
+  pending.set(rid, { kind: msg.type, gm, timer: setTimeout(() => {
     pending.delete(rid);
-    late.set(rid, { kind: msg.type, t: Date.now() });
+    late.set(rid, { kind: msg.type, gm, t: Date.now() });
     setTimeout(() => {
       late.delete(rid);
       refresh();
@@ -456,14 +461,16 @@ function askGM(msg) {
   refresh();
   return rid;
 }
-function answered(rid) {
-  if (!rid) return false;
+/** Is this an answer to one of this client's requests, from the GM who was asked or the primary GM now? (The primary
+ * GM can change while a request is in hand; the asked GM's client still answers it.) */
+function answered(rid, from) {
+  const p = rid ? (pending.get(rid) ?? late.get(rid)) : null;
+  if (!p || (from !== p.gm && from !== game.users.activeGM?.id)) return false;
   if (pending.has(rid)) {
-    clearTimeout(pending.get(rid).timer);
+    clearTimeout(p.timer);
     pending.delete(rid);
-    return true;
-  }
-  return late.delete(rid);
+  } else late.delete(rid);
+  return true;
 }
 
 /* Which GM tab takes a request. The lead tab claims it at once (telling the other tabs) and acts. Any other tab of the
@@ -507,7 +514,7 @@ async function takeAll(plan, changed) {
   const taken = [];
   try {
     for (const p of plan) {
-      if (!p.item.parent || quantityOf(p.item) < p.qty) throw new Refused(changed);
+      if (!p.item.parent || quantityOf(p.item) < p.qty || (hasParts(p.item) && quantityOf(p.item) !== p.qty)) throw new Refused(changed);
       const snap = p.item.toObject();
       await takeFromStock(p.item, p.qty);
       taken.push({ actor: p.item.parent, snap, qty: p.qty });
@@ -525,7 +532,7 @@ async function putBack(taken) {
     data.system.quantity = t.qty;
     const left = t.actor.items.get(data._id);
     // What's left of the stack takes it back; a stack taken whole comes back with its own id, so carts still find it.
-    const put = left ? left.update({ "system.quantity": quantityOf(left) + t.qty }, { pmkInternal: true }) : t.actor.createEmbeddedDocuments("Item", [data], { keepId: true });
+    const put = left ? left.update({ "system.quantity": quantityOf(left) + t.qty }) : t.actor.createEmbeddedDocuments("Item", [data], { keepId: true });
     await put.catch((err) => console.error(`${MOD} | couldn't put ${t.qty} ${data.name} back on ${t.actor.name}`, err));
   }
 }
@@ -565,6 +572,7 @@ async function processTrade(msg, sender) {
       continue;
     }
     if (l.qty > quantityOf(item)) throw new Refused(`${shop.name} has only ${quantityOf(item)} of ${realItem(item).name}.`);
+    if (hasParts(item) && l.qty !== quantityOf(item)) throw new Refused(`${realItem(item).name} has attached parts: buy all ${quantityOf(item)} or none.`);
     const { cp, per } = priceOf(item);
     buys.push({ shop: shop.id, shopDoc: shop, item, qty: l.qty, price: buyPrice(cp, per, l.qty, pct, isTreasure(item)), name: realItem(item).name });
   }
@@ -582,6 +590,7 @@ async function processTrade(msg, sender) {
     if (item.isIdentified === false) throw new Refused("identify it before you sell it.");
     if (!canSellToShop(item)) throw new Refused(`${shop.name} won't buy ${item.name} as it is.`);
     if (l.qty > quantityOf(item)) throw new Refused(`${trader.name} has only ${quantityOf(item)} of ${item.name}.`);
+    if (hasParts(item) && l.qty !== quantityOf(item)) throw new Refused(`${item.name} has attached parts: sell all ${quantityOf(item)} or none.`);
     const { cp, per } = priceOf(item);
     sold.push({ shop: shop.id, shopDoc: shop, conf, item, qty: l.qty, offer: offerFor(cp, per, l.qty, sellRate(conf, isTreasure(item), pctFor(pct, isTreasure(item)))), name: item.name });
   }
@@ -594,8 +603,9 @@ async function processTrade(msg, sender) {
   // A price set by hand on the trader's item (or homebrew with no compendium entry) is flagged for the GM, not refused.
   const notes = new Map();
   for (const x of sold) {
-    const h = await handPriced(x.item);
-    if (h) notes.set(x.shop, [...(notes.get(x.shop) ?? []), handPricedNote(x.name, h)]);
+    for (const { part, h } of await handPricedParts(x.item)) {
+      notes.set(x.shop, [...(notes.get(x.shop) ?? []), handPricedNote(part ? `${part} (attached to ${x.name})` : x.name, h)]);
+    }
   }
 
   // The copies are made before anything changes. Then: the shops' stock and the trader's goods come out (checked
@@ -667,13 +677,15 @@ async function processTrade(msg, sender) {
   // The log keeps purchases and sales apart, one entry each per shop.
   const market = (id) => tradeMarketFor(id, sender)?.name ?? "";
   const unpaidNote = unpaid.join("; ");
+  const entries = [];
   for (const id of new Set([...buys.map((b) => b.shop), ...sold.map((x) => x.shop)])) {
     const b = buys.filter((x) => x.shop === id), x = sold.filter((y) => y.shop === id);
     const shop = shopDoc(id);
     const note = [...(notes.get(id) ?? []), unpaidNote].filter(Boolean).join("; ");
-    if (b.length) logTrade({ kind: "buy", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: b.map((p) => ({ name: p.name, qty: p.qty })), cp: b.reduce((n, p) => n + p.price, 0), note: x.length ? "" : unpaidNote });
-    if (x.length) logTrade({ kind: "sell", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: x.map((p) => ({ name: p.name, qty: p.qty })), cp: x.reduce((n, p) => n + p.offer, 0), note });
+    if (b.length) entries.push({ kind: "buy", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: b.map((p) => ({ name: p.name, qty: p.qty })), cp: b.reduce((n, p) => n + p.price, 0), note: x.length ? "" : unpaidNote });
+    if (x.length) entries.push({ kind: "sell", user: sender.name, actor: trader.name, shop: shop.name, market: market(id), items: x.map((p) => ({ name: p.name, qty: p.qty })), cp: x.reduce((n, p) => n + p.offer, 0), note });
   }
+  logTrade(...entries);
   const named = (list) => list.map((p) => (p.qty > 1 ? `${p.name} ×${p.qty}` : p.name));
   return { trader: trader.name, buy: s.buy, sell: s.sell, net: s.net, bought: named(buys), soldNames: named(sold), note: [...notes.values()].flat().join("; "), unpaid: unpaidNote, lines, sales };
 }
@@ -711,12 +723,13 @@ async function giveSold(shop, datas) {
   for (const data of datas) {
     const src = sourceKey(data._stats?.compendiumSource ?? data.flags?.core?.sourceId);
     const left = data.flags?.[MOD]?.stock?.left;
-    const same = shop.items.find((i) => {
+    // An item with attached parts keeps a stack of its own, as do the shop's items with parts.
+    const same = !hasParts(data) && shop.items.find((i) => {
       const st = i.flags?.[MOD]?.stock;
-      return st?.kind === "sold" && st.left === left && i.name === data.name && i.type === data.type
+      return st?.kind === "sold" && st.left === left && !hasParts(i) && i.name === data.name && i.type === data.type
         && sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId) === src && !i.system?.containerId;
     });
-    if (same) await same.update({ "system.quantity": quantityOf(same) + (Number(data.system?.quantity) || 1) }, { pmkInternal: true });
+    if (same) await same.update({ "system.quantity": quantityOf(same) + (Number(data.system?.quantity) || 1) });
     else await shop.createEmbeddedDocuments("Item", [data]);
   }
 }
@@ -727,7 +740,7 @@ async function undeliver({ actor, before }) {
     const made = actor.items.filter((i) => !before.has(i.id)).map((i) => i.id);
     if (made.length) await actor.deleteEmbeddedDocuments("Item", made);
     const grown = actor.items.filter((i) => before.has(i.id) && quantityOf(i) > before.get(i.id)).map((i) => ({ _id: i.id, "system.quantity": before.get(i.id) }));
-    if (grown.length) await actor.updateEmbeddedDocuments("Item", grown, { pmkInternal: true });
+    if (grown.length) await actor.updateEmbeddedDocuments("Item", grown);
   } catch (err) {
     console.error(`${MOD} | couldn't undo items given to ${actor.name}; check its inventory`, err);
     ui.notifications.error(esc(`Marketplace: a failed trade left items on ${actor.name}. Check its inventory.`), { permanent: true });
@@ -784,27 +797,36 @@ const isRequest = (o) => !o.give.items.length && !o.give.cp;
 /** Characters an offer can be for: any character a player owns. */
 const offerTargets = () => game.actors.filter((a) => a.type === "character" && a.hasPlayerOwner);
 
-/** Is every item of an offer's side still there, in that number? */
-function sideHas(actor, items) {
+/** Is every item of an offer's side still there, in that number, and as it was? Null when it is, else "gone" or
+ * "changed". `prints`: compare fingerprints (only under the PF2e version the offer was posted under). */
+function sideProblem(actor, items, prints = true) {
   const rows = new Map(tradeRows(actor).map((r) => [r.id, r]));
+  let changed = false;
   for (const l of items) {
     const r = rows.get(l.item);
-    // An item renamed or identified since the offer went up isn't what the offer shows.
-    if (!r || r.why || r.qty < l.qty || (l.name && r.name !== l.name)) return false;
+    if (!r || r.why || r.qty < l.qty) return "gone";
+    // Renamed, identified, used or edited since the offer went up, it isn't what the offer shows (an offer posted
+    // before fingerprints has only the name to go by). An item with attached parts is offered as its whole stack.
+    if ((l.name && r.name !== l.name) || (r.parts && r.qty !== l.qty) || (prints && l.fp && itemPrint(actor.items.get(l.item)) !== l.fp)) changed = true;
   }
-  return true;
+  return changed ? "changed" : null;
 }
 
 /** Can this offer be taken by `taker` now? Null when it can, else why not. */
 function offerProblem(offer, taker) {
   const from = game.actors.get(offer.from);
   if (!from) return "The character who posted it is gone.";
-  if (!sideHas(from, offer.give.items)) return `${from.name} no longer has everything offered.`;
+  const prints = !!offer.sv && offer.sv === game.system.version;
+  const give = sideProblem(from, offer.give.items, prints);
+  if (give === "gone") return `${from.name} no longer has everything offered.`;
+  if (give) return "Something offered has changed since the offer went up. It needs posting again.";
   const net = offerNet(offer);
   if (net < 0 && fundsCp(from) < -net) return `${from.name} hasn't the money offered.`;
   if (!taker) return null;
   if (!canAccept(offer, taker.id)) return offer.from === taker.id ? "Your own offer." : "It's for someone else.";
-  if (!sideHas(taker, offer.want.items)) return `${taker.name} doesn't have everything asked for.`;
+  const want = sideProblem(taker, offer.want.items, prints);
+  if (want === "gone") return `${taker.name} doesn't have everything asked for.`;
+  if (want) return "Something asked for has changed since the offer went up. It needs posting again.";
   if (net > 0 && fundsCp(taker) < net) return `${taker.name} hasn't enough money.`;
   return null;
 }
@@ -814,7 +836,7 @@ function offerProblem(offer, taker) {
  * player's character, at most MAX_OFFERS_EACH offers per character and MAX_OFFERS in all.
  */
 async function processPost(msg, sender) {
-  const o = cleanOffer({ ...msg.offer, id: foundry.utils.randomID(16), user: sender.id, created: Date.now() });
+  const o = cleanOffer({ ...msg.offer, id: foundry.utils.randomID(16), user: sender.id, created: Date.now(), sv: game.system.version });
   if (!o) throw new Refused("an offer needs something offered or asked for (a gift of coins alone isn't an offer).");
   const from = game.actors.get(o.from);
   if (!from || !tradersFor(sender).some((a) => a.id === from.id)) throw new Refused("you can't post for that character.");
@@ -823,7 +845,8 @@ async function processPost(msg, sender) {
   for (const l of o.give.items) {
     const r = fromRows.get(l.item);
     if (!r || r.why || r.qty < l.qty) throw new Refused(`${from.name} can't offer ${r?.name ?? "that"} as it is.`);
-    Object.assign(l, { name: r.name, img: r.img });
+    if (r.parts && l.qty !== r.qty) throw new Refused(`${r.name} has attached parts: offer all ${r.qty} or none.`);
+    Object.assign(l, { name: r.name, img: r.img, fp: itemPrint(from.items.get(l.item)) });
   }
   if (o.want.items.length) {
     const to = game.actors.get(o.to);
@@ -831,7 +854,8 @@ async function processPost(msg, sender) {
     for (const l of o.want.items) {
       const r = toRows.get(l.item);
       if (!r || r.why || r.qty < l.qty) throw new Refused(`${to.name} hasn't ${r?.name ?? "that"} to trade.`);
-      Object.assign(l, { name: r.name, img: r.img });
+      if (r.parts && l.qty !== r.qty) throw new Refused(`${r.name} has attached parts: ask for all ${r.qty} or none.`);
+      Object.assign(l, { name: r.name, img: r.img, fp: itemPrint(to.items.get(l.item)) });
     }
   }
   if (offers().filter((x) => x.from === from.id).length >= MAX_OFFERS_EACH) throw new Refused(`${from.name} already has ${MAX_OFFERS_EACH} offers up.`);
@@ -994,17 +1018,21 @@ function onSocket(msg, senderId) {
         announceTab(false);
       }
     } else if (msg.type === "gmbye" && sender?.id === game.user.id) gmTabs.delete(msg.client);
-    else if (msg.type === "claim" && sender?.isGM && typeof msg.key === "string") handled.set(msg.key, Date.now());
+    else if (msg.type === "claim" && sender && sender.id === game.users.activeGM?.id && typeof msg.key === "string") handled.set(msg.key, Date.now());
     else if (sender && sender.id !== game.user.id && (msg.type === "trade" || POST_TYPES.has(msg.type))) takeRequest(msg, sender);
     // An assistant GM's own trades go through the primary GM's client too, and come back like a player's.
     if (msg.type !== "done" && msg.type !== "fail" && msg.type !== "notice") return;
   }
   if (!sender?.isGM) return;
   if (Array.isArray(msg.users) && !msg.users.includes(game.user.id)) return;
-  if (msg.type === "notice") return void ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "")}`));
+  // Requests are handled on the primary GM's client, so notices come only from it.
+  if (msg.type === "notice") {
+    if (sender.id === game.users.activeGM?.id) ui.notifications.info(esc(`Marketplace: ${String(msg.text ?? "")}`));
+    return;
+  }
   if (msg.type !== "done" && msg.type !== "fail") return;
   // Only answers to this client's own requests (a GM answers the user, who may have two windows open).
-  if (!answered(msg.rid)) return;
+  if (!answered(msg.rid, sender.id)) return;
   refresh();
   if (msg.type === "fail") {
     ui.notifications.warn(esc(String(msg.text ?? "Marketplace: that didn't work.")));
@@ -1071,12 +1099,21 @@ const busy = () => trading || waitingFor("trade") || [...late.values()].some((l)
 
 const openApps = new Set();
 let refreshTimer = null;
-function refresh() {
+let refreshAll = false;
+const refreshOnly = [];
+/** Redraw open windows soon (calls close together make one redraw): all of them, or only those `only` picks. */
+function refresh(only = null) {
+  if (typeof only === "function") refreshOnly.push(only);
+  else refreshAll = true;
   clearTimeout(refreshTimer);
   refreshTimer = setTimeout(() => {
-    for (const app of openApps) if (app.rendered) app.render();
+    const all = refreshAll, picks = refreshOnly.splice(0);
+    refreshAll = false;
+    for (const app of openApps) if (app.rendered && (all || picks.some((f) => f(app)))) app.render();
   }, 100);
 }
+/** A window showing the trade log (a GM's). */
+const showsLog = (app) => app.isGM && app.view.log && !app.view.post;
 
 function loadView() {
   try {
@@ -1905,15 +1942,16 @@ class MarketApp extends Base {
     if (data.flags) delete data.flags[MOD];
     if (!item.pack && !item.parent && !data._stats?.compendiumSource) foundry.utils.setProperty(data, `flags.${MOD}.source`, item.uuid);
     const src = sourceKey(data._stats?.compendiumSource ?? data.flags?.core?.sourceId ?? (item.pack ? item.uuid : null));
-    const same = src && shop.items.find((i) => {
+    // An item with attached parts comes in as a staple of its own, and a staple with parts takes no more.
+    const same = src && !hasParts(data) && shop.items.find((i) => {
       const st = cleanStock(i.flags?.[MOD]?.stock, quantityOf(i));
-      return st.kind === "staple" && !st.formula && i.name === data.name && i.type === data.type && !i.system?.containerId
+      return st.kind === "staple" && !st.formula && !hasParts(i) && i.name === data.name && i.type === data.type && !i.system?.containerId
         && sourceKey(i._stats?.compendiumSource ?? i.flags?.core?.sourceId) === src;
     });
     const qty = Math.max(1, Number(data.system?.quantity) || 1);
     if (same) {
       const st = cleanStock(same.flags?.[MOD]?.stock, quantityOf(same));
-      await same.update({ "system.quantity": quantityOf(same) + qty, [`flags.${MOD}.stock.qty`]: st.qty + qty }, { pmkInternal: true });
+      await same.update({ "system.quantity": quantityOf(same) + qty, [`flags.${MOD}.stock.qty`]: st.qty + qty });
     } else await shop.createEmbeddedDocuments("Item", [data]);
   }
 
@@ -2035,7 +2073,7 @@ class MarketApp extends Base {
     // An unmarked item is a staple of what it has (as everywhere else); the mark keeps its kind and number.
     const next = { ...raw, kind: st.kind, qty: st.kind === "staple" ? st.qty : raw.qty ?? null, formula: !st.formula };
     if (!next.formula) next.price = null;
-    await item.update({ [`flags.${MOD}.stock`]: next }, { pmkInternal: true });
+    await item.update({ [`flags.${MOD}.stock`]: next });
   }
 
   /** GM: set a formula's price, or clear it back to the price for its level. */
@@ -2058,7 +2096,7 @@ class MarketApp extends Base {
     const n = Number(gp);
     if (String(gp).trim() === "" || !Number.isFinite(n) || n < 0) next.price = null;
     else next.price = Math.round(n * 100);
-    await item.update({ [`flags.${MOD}.stock`]: next }, { pmkInternal: true });
+    await item.update({ [`flags.${MOD}.stock`]: next });
   }
 
   /** GM: set what a staple restocks to. */
@@ -2136,14 +2174,21 @@ class MarketApp extends Base {
       if (!line) return;
       const per = doc ? itemPrice(doc).per : 1;
       const max = doc ? (isFormulaItem(doc) ? 1 : quantityOf(doc)) : line.qty;
-      this.#setQty("buy", shop, item, Math.max(1, Math.min(max, line.qty + dir * per)));
+      // An item with attached parts is all or nothing: minus takes it out of the cart.
+      if (dir < 0 && doc && hasParts(doc)) {
+        cart.lines = cart.lines.filter((l) => l !== line);
+        saveCart(cart);
+      } else this.#setQty("buy", shop, item, Math.max(1, Math.min(max, line.qty + dir * per)));
     } else {
       const { chosen } = buyerChoices(cart);
       const row = sellRows(chosen).find((r) => r.id === item);
       const line = cart.sales.find((l) => l.actor === chosen?.id && l.item === item);
       if (!line) return;
       const per = row?.per ?? 1;
-      this.#setQty("sale", shop, item, Math.max(1, Math.min(row?.qty ?? line.qty, line.qty + dir * per)));
+      if (dir < 0 && row?.parts) {
+        cart.sales = cart.sales.filter((l) => l !== line);
+        saveCart(cart);
+      } else this.#setQty("sale", shop, item, Math.max(1, Math.min(row?.qty ?? line.qty, line.qty + dir * per)));
     }
     this.render();
   }
@@ -2568,7 +2613,7 @@ async function restockNow(shop, market, { keepSold = false, draw = true } = {}) 
     ...plan.refill.map((r) => ({ _id: r.id, "system.quantity": r.qty })),
     ...plan.age.map((a) => ({ _id: a.id, [`flags.${MOD}.stock.left`]: a.left })),
   ];
-  if (updates.length) await shop.updateEmbeddedDocuments("Item", updates, { pmkInternal: true });
+  if (updates.length) await shop.updateEmbeddedDocuments("Item", updates);
   if (drawn.length) await shop.createEmbeddedDocuments("Item", drawn.map((d) => d.data));
   const filled = await fillPurse(shop, market);
   const rotations = (Number(flagOf(shop, "rotations")) || 0) + 1;
@@ -2636,7 +2681,7 @@ async function markStaples(shops) {
       if (i.system?.identification?.status && i.system.identification.status !== "identified") u["system.identification.status"] = "identified";
       if (Object.keys(u).length) updates.push({ _id: i.id, ...u });
     }
-    if (updates.length) await shop.updateEmbeddedDocuments("Item", updates, { pmkInternal: true });
+    if (updates.length) await shop.updateEmbeddedDocuments("Item", updates);
   }
 }
 
@@ -2760,7 +2805,7 @@ async function marketDialog(market) {
       root?.querySelector(".pmk-browse")?.addEventListener("click", () => {
         const input = root.querySelector('input[name="img"]');
         const FP = foundry.applications.apps.FilePicker.implementation;
-        new FP({ type: "image", current: input.value, callback: (path) => (input.value = path) }).render(true);
+        new FP({ type: "image", current: input.value, callback: (path) => (input.value = path) }).render({ force: true });
       });
     },
     buttons: [
@@ -2804,7 +2849,7 @@ Hooks.once("init", () => {
     scope: "world", config: false, type: Object, default: { markets: [] },
     onChange: () => refresh(),
   });
-  game.settings.register(MOD, "log", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh() });
+  game.settings.register(MOD, "log", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh(showsLog) });
   game.settings.register(MOD, "offers", { scope: "world", config: false, type: Array, default: [], onChange: () => refresh() });
   game.settings.register(MOD, "sheetColor", {
     name: "Pathfinder sheet look: color",
@@ -2828,7 +2873,7 @@ Hooks.once("init", () => {
   game.settings.register(MOD, "purseScale", {
     name: "Shop purse size (%)",
     hint: "How full Fill purse (and a new shop) makes a shop's purse: 100% is one level's party treasure for the shop's level (GM Core), 100 gp below level 1. Lower it for a poor region, raise it for a rich one.",
-    scope: "world", config: true, type: Number, default: 100, range: { min: 10, max: 500, step: 10 },
+    scope: "world", config: true, type: Number, default: 100, range: { min: 10, max: 500, step: 10 }, onChange: () => refresh(),
   });
   for (const r of ["uncommon", "rare"]) {
     game.settings.register(MOD, `formula-${r}`, {
@@ -2880,10 +2925,14 @@ Hooks.on("renderActorDirectory", addDirectoryButton);
 
 /* Anything that changes what a shop or market shows redraws the window. */
 const lootActor = (a) => a?.type === "loot";
-for (const hook of ["createActor", "updateActor", "deleteActor"]) Hooks.on(hook, (a) => lootActor(a) && refresh());
+for (const hook of ["createActor", "updateActor", "deleteActor"]) Hooks.on(hook, (a) => {
+  if (lootActor(a)) refresh();
+});
 // Shops' stock, and the money and goods of anyone this user buys for (the cart shows what they have).
 const watched = (a) => lootActor(a) || ((a?.type === "character" || a?.type === "party") && a.isOwner);
-for (const hook of ["createItem", "updateItem", "deleteItem"]) Hooks.on(hook, (item) => watched(item.parent) && refresh());
+for (const hook of ["createItem", "updateItem", "deleteItem"]) Hooks.on(hook, (item) => {
+  if (watched(item.parent)) refresh();
+});
 // Anything put in a merchant without a stock mark (the GM dragging it in, or PF2e's own sheet) is a staple that comes
 // back to its quantity on a restock. Set on the creating client, before the item exists.
 Hooks.on("preCreateItem", (item, data) => {
@@ -2894,7 +2943,9 @@ Hooks.on("preCreateItem", (item, data) => {
   item.updateSource({ [`flags.${MOD}.stock`]: { kind: "staple", qty: Math.max(0, Number(data?.system?.quantity ?? item.quantity ?? 1) || 0) } });
 });
 // A shopkeeper's attitude changing (PF2e NPC Attitudes) changes prices.
-Hooks.on("updateActor", (a, change) => a?.type === "npc" && change?.flags?.["pf2e-npc-attitudes"] && refresh());
+Hooks.on("updateActor", (a, change) => {
+  if (a?.type === "npc" && change?.flags?.["pf2e-npc-attitudes"]) refresh();
+});
 // Players logging in or out changes whether a GM is there to trade with.
 Hooks.on("userConnected", () => refresh());
 Hooks.on("updateWorldTime", () => checkSchedules());
@@ -2906,12 +2957,6 @@ Hooks.once("ready", () => setTimeout(async () => {
   }
   checkSchedules();
 }, 5000));
-// More of a staple put in by hand (the system stacks it) raises what it restocks to; the module's own changes say so.
-Hooks.on("preUpdateItem", (item, change, options) => {
-  if (options?.pmkInternal || !game.user.isGM || !isMerchant(item.parent)) return;
-  const q = foundry.utils.getProperty(change, "system.quantity");
-  const st = item.flags?.[MOD]?.stock;
-  if (q === undefined || st?.kind !== "staple" || foundry.utils.hasProperty(change, `flags.${MOD}.stock`)) return;
-  if (Number(q) > (Number(st.qty) || 0)) foundry.utils.setProperty(change, `flags.${MOD}.stock.qty`, Number(q));
+for (const hook of ["createFolder", "updateFolder", "deleteFolder"]) Hooks.on(hook, (f) => {
+  if (f.type === "Actor") refresh();
 });
-for (const hook of ["createFolder", "updateFolder", "deleteFolder"]) Hooks.on(hook, (f) => f.type === "Actor" && refresh());

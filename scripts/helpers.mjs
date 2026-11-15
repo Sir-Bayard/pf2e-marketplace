@@ -474,21 +474,18 @@ export function parseRange(text, fallback = [1, 1], lo = 1, hi = 50) {
 }
 export const rollRange = ([a, b], rand = Math.random) => a + Math.floor(rand() * (b - a + 1));
 
-/**
- * A line of a shop's rotating stock: { filter, amount (a size or 1 to 50), rarity (how rare it may draw) }, 12 at
- * most. The legacy form { count, uncommon } is read too.
- */
+/** A line of a shop's rotating stock: { filter, amount (a size or 1 to 50), rarity (how rare it may draw) }, 12 at most. */
 export const MAX_STOCK_LINES = 12;
 export function cleanStockLines(raw) {
   const out = [];
   for (const l of Array.isArray(raw) ? raw : []) {
     if (!FILTER_IDS.has(l?.filter) || out.length >= MAX_STOCK_LINES) continue;
-    let amount = l.amount ?? l.count;
+    let amount = l.amount;
     if (!AMOUNTS.includes(amount)) {
       const n = Math.round(Number(amount));
       amount = Number.isFinite(n) ? Math.max(1, Math.min(50, n)) : "some";
     }
-    const rarity = LINE_RARITIES.includes(l.rarity) ? l.rarity : l.uncommon ? "uncommon" : "common";
+    const rarity = LINE_RARITIES.includes(l.rarity) ? l.rarity : "common";
     out.push({ filter: l.filter, amount, rarity });
   }
   return out;
@@ -555,13 +552,13 @@ export const drawnQty = (e, rand = Math.random, stack = [1, 4]) => (stacks(e) ? 
 
 /**
  * Can a spell (an index entry of the spell list) go on a scroll or in a wand: not a cantrip, focus spell or ritual,
- * and no rarer than the line allows (`upTo`: common, uncommon or rare; the legacy value true means uncommon).
+ * and no rarer than the line allows (`upTo`: common, uncommon or rare).
  */
 export function scribable(e, upTo = "common") {
   const t = tr(e);
   if (t.includes("cantrip") || t.includes("focus")) return false;
   if (e?.system?.ritual) return false;
-  return rarityAllowed(e?.system?.traits?.rarity, upTo === true ? "uncommon" : upTo || "common");
+  return rarityAllowed(e?.system?.traits?.rarity, upTo || "common");
 }
 
 /**
@@ -667,7 +664,7 @@ function cleanOfferItems(raw) {
     const qty = Math.floor(Number(l?.qty));
     if (!ID.test(item) || seen.has(item) || !(qty >= 1) || out.length >= MAX_OFFER_ITEMS) continue;
     seen.add(item);
-    out.push({ item, qty: Math.min(MAX_QTY, qty), name: str(l.name, 120), img: str(l.img, 500) });
+    out.push({ item, qty: Math.min(MAX_QTY, qty), name: str(l.name, 120), img: str(l.img, 500), fp: str(l.fp, 20) });
   }
   return out;
 }
@@ -693,6 +690,9 @@ export function cleanOffer(o) {
     want,
     note: str(o.note, 300),
     created: Number.isFinite(Number(o.created)) ? Number(o.created) : 0,
+    // The PF2e version it was posted under: a system update can rewrite items' data, so fingerprints are compared only
+    // under the same version.
+    sv: str(o.sv, 20),
   };
 }
 
@@ -711,6 +711,25 @@ export function cleanOffers(raw) {
     out.push(o);
   }
   return out;
+}
+
+/** A short, stable fingerprint of plain data (the same whatever order its keys are in): cyrb53 over its sorted JSON. */
+export function fingerprint(value) {
+  const json = stableJson(value);
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < json.length; i++) {
+    const c = json.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 2654435761);
+    h2 = Math.imul(h2 ^ c, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+function stableJson(v) {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+  if (v && typeof v === "object") return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${stableJson(v[k])}`).join(",")}}`;
+  return JSON.stringify(v) ?? "null";
 }
 
 /** Can a character take this offer: not their own, and the offer is open or for them. */

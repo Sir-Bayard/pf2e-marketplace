@@ -3,10 +3,10 @@
  * that breaks something breaks it in one place. Each function says which part of the system it relies on.
  */
 
+import { formulaKey, fingerprint } from "./helpers.mjs";
+
 /** A PF2e merchant: a loot actor whose sheet type is "Merchant" (`system.lootSheetType`). */
 export const isMerchant = (actor) => actor?.type === "loot" && actor.system?.lootSheetType === "Merchant";
-
-import { formulaKey } from "./helpers.mjs";
 
 const MOD_ID = "pf2e-marketplace";
 
@@ -33,14 +33,94 @@ export function realItem(item) {
   };
 }
 
-/** An item's price in copper for one batch, and the batch size (`price.value.copperValue`, `price.per`). */
+/**
+ * An item's price in copper for one batch, and the batch size (`price.value.copperValue`, `price.per`). An item with
+ * attached parts trades only as its whole stack, so its batch is the whole stack, priced the way PF2e works out an
+ * item's worth (`assetValue`): the item for its quantity, plus each part once at its own price for its quantity. A
+ * specific magic item's parts are already in its price.
+ */
 export function priceOf(item) {
   const p = item?.price ?? item?.system?.price ?? {};
-  const v = p.value;
-  const cp = typeof v?.copperValue === "number" ? v.copperValue : coinsToCp(v);
-  return { cp: Math.max(0, Math.round(cp || 0)), per: Math.max(1, Number(p.per) || 1) };
+  const per = Math.max(1, Number(p.per) || 1);
+  const cp = Math.max(0, Math.round(copperOf(p.value) || 0));
+  if (!hasParts(item)) return { cp, per };
+  // A sold-out stack is priced as one, for its line.
+  const n = Math.max(1, Number(item?.quantity ?? item?.system?.quantity ?? 1) || 0);
+  return { cp: Math.floor(cp * n / per + 1e-9) + partsCp(item), per: n };
 }
 const coinsToCp = (c) => (c && typeof c === "object" ? (Number(c.pp) || 0) * 1000 + (Number(c.gp) || 0) * 100 + (Number(c.sp) || 0) * 10 + (Number(c.cp) || 0) : 0);
+const copperOf = (v) => (typeof v?.copperValue === "number" ? v.copperValue : coinsToCp(v));
+
+/**
+ * An item's attached parts (`subitems`: a weapon attached to a shield or a crossbow, loaded ammunition, installed
+ * upgrades): the documents of a live item, else the plain data in `system.subitems`.
+ */
+export function partsOf(item) {
+  const live = item?.subitems;
+  if (Array.isArray(live?.contents)) return [...live.contents];
+  if (Array.isArray(live)) return live;
+  const raw = item?.system?.subitems;
+  return Array.isArray(raw) ? raw : [];
+}
+/** Does the item carry attached parts? Such an item trades as a whole stack, since every copy made carries them. */
+export const hasParts = (item) => partsOf(item).length > 0;
+const isSpecific = (item) => (typeof item?.isSpecific === "boolean" ? item.isSpecific : !!item?.system?.specific);
+/** What an item's attached parts are worth, in copper (nothing for a specific magic item). PF2e scales a part's price
+ * by its quantity over its batch and drops fractions of a copper. */
+function partsCp(item) {
+  if (isSpecific(item)) return 0;
+  let n = 0;
+  for (const part of partsOf(item)) {
+    const p = part?.price ?? part?.system?.price ?? {};
+    const qty = Math.max(0, Number(part?.quantity ?? part?.system?.quantity ?? 1) || 0);
+    n += Math.floor((copperOf(p.value) || 0) * qty / Math.max(1, Number(p.per) || 1) + 1e-9);
+  }
+  return Math.max(0, n);
+}
+
+/**
+ * A short fingerprint of what an item is, for Trade Post offers: its source data without its quantity (offers check
+ * that on their own) and without what changes while the item stays the same: where it sits and how it's carried, the
+ * system's migration stamp and publication, a container folded on the sheet, the ammunition chosen for a strike,
+ * trait toggles (versatile, modular, a shield's integrated weapon), and what's toggled or chosen in its rule elements
+ * (a roll option's value, a choice's selection, a strike's trait toggles). A charge used, damage taken or an edit
+ * changes it. Attached parts count, each read the same way but with their quantity (loaded ammunition used up).
+ */
+export function itemPrint(item) {
+  return fingerprint(printable(item?._source?.system ?? item?.system));
+}
+const PLAY_STATE = ["containerId", "equipped", "_migration", "publication", "collapsed", "selectedAmmoId"];
+const TOGGLED_RULES = new Set(["RollOption", "ChoiceSet"]);
+function printable(system, part = false) {
+  const s = { ...(system && typeof system === "object" ? system : {}) };
+  for (const k of PLAY_STATE) delete s[k];
+  if (!part) delete s.quantity;
+  if (s.traits && typeof s.traits === "object") {
+    s.traits = { ...s.traits };
+    delete s.traits.toggles;
+    if (s.traits.integrated && typeof s.traits.integrated === "object" && s.traits.integrated.versatile && typeof s.traits.integrated.versatile === "object") {
+      s.traits.integrated = { ...s.traits.integrated, versatile: { ...s.traits.integrated.versatile } };
+      delete s.traits.integrated.versatile.selected;
+    }
+  }
+  if (s.meleeUsage && typeof s.meleeUsage === "object") {
+    s.meleeUsage = { ...s.meleeUsage };
+    delete s.meleeUsage.traitToggles;
+  }
+  if (Array.isArray(s.rules)) {
+    s.rules = s.rules.map((r) => {
+      if (!r || typeof r !== "object") return r;
+      const { traitToggles, ...rest } = r;
+      if (TOGGLED_RULES.has(rest.key)) {
+        delete rest.selection;
+        if (rest.key === "RollOption" && rest.toggleable) delete rest.value;
+      }
+      return rest;
+    });
+  }
+  if (Array.isArray(s.subitems)) s.subitems = s.subitems.map((p) => ({ name: p?.name, type: p?.type, system: printable(p?.system, true) }));
+  return s;
+}
 
 /**
  * A shop's stock as plain rows: every physical item but coins. Items inside containers are listed too; a container
@@ -66,9 +146,6 @@ export function stockRows(actor) {
       cp,
       per,
       holds,
-      inside: !!item.system?.containerId,
-      // Whether the sheet has it identified (the window doesn't read this; shops show and sell items identified).
-      identified: item.isIdentified !== false,
       // The module's stock mark (staple, rotating, sold), raw; cleaned by the caller.
       stock: item.flags?.[MOD_ID]?.stock ?? null,
     });
@@ -141,8 +218,14 @@ export function boughtCopy(item, qty) {
 /** Put items in an actor's inventory, stacked with what it already has where PF2e can (`inventory.add`). */
 export async function giveItems(actor, datas) {
   if (!datas.length) return;
-  if (typeof actor.inventory?.add === "function") await actor.inventory.add(datas, { stack: true });
-  else await actor.createEmbeddedDocuments("Item", datas);
+  // An item with attached parts stays a stack of its own: PF2e would stack two copies of it into one with a single set
+  // of parts.
+  const loose = datas.filter((d) => !hasParts(d)), whole = datas.filter((d) => hasParts(d));
+  if (loose.length) {
+    if (typeof actor.inventory?.add === "function") await actor.inventory.add(loose, { stack: true });
+    else await actor.createEmbeddedDocuments("Item", loose);
+  }
+  if (whole.length) await actor.createEmbeddedDocuments("Item", whole);
 }
 
 /** Take a quantity out of a shop's stock. Rotating and sold stock goes when none are left, as PF2e's own sale does; a
@@ -159,7 +242,7 @@ export async function takeFromStock(item, qty) {
   // what it restocks to.
   const change = { "system.quantity": Math.max(0, left) };
   if (staple && !mark) change[`flags.${MOD_ID}.stock`] = { kind: "staple", qty: quantityOf(item) };
-  await item.update(change, { pmkInternal: true });
+  await item.update(change);
 }
 
 /** Actors a user can buy for: characters they own, and the party (its stash) if they own it. A GM can buy for any
@@ -195,7 +278,7 @@ export function sellRows(actor) {
     else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
     else if (isParchment(item)) why = "A formula's copy; shops don't buy it.";
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
-    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), why });
+    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), parts: hasParts(item), why });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
@@ -210,7 +293,7 @@ export function tradeRows(actor) {
     if (granted(item)) why = "Not yours to trade (temporary, or granted by a feature).";
     else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
-    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, qty: quantityOf(item), why });
+    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, qty: quantityOf(item), parts: hasParts(item), why });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
@@ -269,7 +352,7 @@ export function keeperFace(actor, isGM) {
  * entry, as homebrew does). The sale still goes through; the GM's notice and the trade log say so.
  */
 export async function handPriced(item) {
-  const own = item?._source?.system?.price ?? {};
+  const own = (item?._source ?? item)?.system?.price ?? {};
   const cp = coinsToCp(own.value), per = Math.max(1, Number(own.per) || 1);
   const uuid = item?._stats?.compendiumSource ?? item?.flags?.core?.sourceId ?? null;
   let src = null;
@@ -286,6 +369,21 @@ export async function handPriced(item) {
   // The same price per unit, whatever the batch size.
   if (scp * per === cp * sper) return null;
   return { cp, per, source: { cp: scp, per: sper } };
+}
+
+/**
+ * `handPriced` for an item and each of its attached parts: [{ part, h }] for each one priced by hand or with no
+ * compendium entry, `part` being the attached part's name (null for the item itself).
+ */
+export async function handPricedParts(item) {
+  const out = [];
+  const own = await handPriced(item);
+  if (own) out.push({ part: null, h: own });
+  for (const part of partsOf(item)) {
+    const h = await handPriced(part);
+    if (h) out.push({ part: String(part?.name ?? "an attached part"), h });
+  }
+  return out;
 }
 
 /* ------------------------------------------------------------------ */

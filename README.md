@@ -73,11 +73,11 @@ Shops sell identified goods: an item put in a shop unidentified is identified th
 
 Each item in a shop is one of three kinds, shown to you on its line (click the mark to swap staple and rotating):
 
-- **Staples** come back to their number on every restock (right-click the mark to set it). Anything you drag onto a shop is a staple, and a staple that sells out stays on the list as sold out.
+- **Staples** come back to their number on every restock (right-click the mark to set it; a quantity changed on the merchant's sheet doesn't change it, and the next restock sets it back). Anything you drag onto a shop is a staple, and a staple that sells out stays on the list as sold out.
 - **Rotating** stock is cleared on a restock and drawn again.
 - **Sold** items are what players sold the shop. They're for sale at full price and stay for two restocks by default (gone at the second; a shop setting), so selling the day before market day still leaves a chance to buy back.
 
-Stock a shop had before version 0.2 becomes staples of what it has, the first time a GM loads the world.
+Merchants you stocked before installing the module become staples of what they have, the first time a GM loads the world.
 
 A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Few Scrolls" or "4 Potions and oils", from 20 ready filters, each common only, up to uncommon or up to rare. Few, Some, Many and Lots draw a number in a range (1-3, 3-6, 6-10, 10-20 by default; module settings). Items are drawn from the system's compendium up to the shop's level, most of them near that level; consumables (not wands), bombs and ammunition come in stacks of one to four (a setting); scrolls and some wands get a random spell of a rank that fits. Nothing the shop already stocks is drawn again (for scrolls and wands, the same spell); Draw adds to what's there, a restock replaces the rotating stock.
 
@@ -85,11 +85,11 @@ A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Fe
 - **Restock** puts staples back, clears and redraws rotating stock, counts sold items down and fills the purse; you can skip the draw or keep sold items that once. **Restock all** on a market does every shop.
 - A market can **restock every so many days** of game time (Edit): when that much time has passed on the world clock, every shop restocks once, however long it's been. Restock all starts the count again.
 
+While a shop is browse only, players see its staples, plus the rest of its stock if they saw it open since its last restock ("the stock has changed since your last visit" otherwise).
+
 ### Formulas
 
 Click the scroll mark on an item's line to sell its formula instead of the item. It shows as "Formula: Alchemist's Fire" under Formulas, priced from the Formula Price table by item level (5 sp at level 0, 1 gp at level 1, up to 3,500 gp at 20), times 2 for uncommon and 10 for rare (settings). Right-click the mark to set your own price. An item needs a compendium or Items-tab entry for its formula to point to. The shop keeps it and sells a copy to each buyer: the formula goes into the character's Crafting tab, with a parchment of it that weighs nothing. A character who already knows it can't buy it, and the party stash can't. The stock lines **Formulas: alchemical** and **Formulas: any** draw formulas, one copy each. A basic crafter's book is an ordinary item.
-
-While a shop is browse only, players see its staples, plus the rest of its stock if they saw it open since its last restock ("the stock has changed since your last visit" otherwise).
 
 ### Shopkeepers and prices
 
@@ -113,7 +113,7 @@ These are settings, as is whether hostile shopkeepers trade at all. Treasure (ge
 
 Open the **Marketplace**, pick a market and a shop. Click an item for its description; right-click it for its full sheet. **Trading as** chooses which of your characters is shopping (or the party stash, if you own the party); prices are for that character.
 
-**Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off. A formula is one copy: buying it puts it in your character's Crafting tab, with a parchment of it.
+**Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off. A formula is one copy: buying it puts it in your character's Crafting tab, with a parchment of it. An item's price includes anything attached to it (spikes on a shield, loaded ammunition), as the character sheet counts its worth, when buying and selling; a stack of such items trades all at once.
 
 **Selling.** A shop's **Sell** tab lists what your character carries, with the shop's offer for each. Click the offer button on a line to offer one more (or one batch), right-click for one fewer, or type how many. Unidentified items have to be identified first, and containers emptied. Something worth nothing sells for nothing, a way to get rid of it.
 
@@ -121,7 +121,7 @@ Open the **Marketplace**, pick a market and a shop. Click an item for its descri
 
 ### The Trade Post
 
-**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Give nothing and it's a request (5 sp from anyone, say), which another character fills with **Give**. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
+**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Give nothing and it's a request (5 sp from anyone, say), which another character fills with **Give**. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; an item used or changed since it went up (a charge spent, damage, an edit) holds the offer until it's posted again. An item with something attached is offered as its whole stack. Take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
 
 A GM has to be logged in for any trade: Foundry only lets a GM's client change the merchants. Browsing works without one.
 
