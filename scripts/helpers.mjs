@@ -2,7 +2,7 @@
  * PF2e Marketplace: helpers that need nothing from Foundry or the system, so node tests can load them.
  */
 
-export const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+export { esc } from "./kit/safe-text.mjs";
 
 const str = (v, max) => String(v ?? "").trim().slice(0, max);
 const int = (v, lo, hi) => {
@@ -30,7 +30,37 @@ export function cleanMarket(m) {
     // A timed restock of every shop, in game days (0: none), and the game time of the last one.
     restockEvery: m.restockEvery === null || m.restockEvery === undefined || m.restockEvery === "" ? 0 : int(m.restockEvery, 0, 365),
     lastRestock: m.lastRestock !== null && m.lastRestock !== undefined && m.lastRestock !== "" && Number.isFinite(Number(m.lastRestock)) ? Number(m.lastRestock) : null,
+    // A price change for every shop in the market (a festival, a siege), in percent, and why, shown to players.
+    pricePct: int(m.pricePct, -90, 200) ?? 0,
+    priceWhy: str(m.priceWhy, 120),
+    // A PF2e Campaign Trackers reputation tracker whose tier moves prices here, and the percent for each tier (by id).
+    reputation: TRACKER_ID.test(String(m.reputation ?? "")) ? String(m.reputation) : null,
+    repPcts: cleanTierPcts(m.repPcts),
+    // Vaults: each character's own storage at this market, and a fee for each deposit in copper.
+    vaults: !!m.vaults,
+    vaultFee: int(m.vaultFee, 0, 100000000) ?? 0,
+    // The reputation tier now, as the GM's client last read it from Campaign Trackers (players can't read the
+    // trackers, so everyone prices from this copy): { id, name, revealed }.
+    repNow: cleanRepNow(m.repNow),
   };
+}
+
+/** The stored reputation tier: { id, name, revealed }, or null. */
+function cleanRepNow(r) {
+  if (!r || typeof r !== "object" || !TRACKER_ID.test(String(r.id ?? ""))) return null;
+  return { id: String(r.id), name: str(r.name, 80), revealed: r.revealed !== false };
+}
+
+const TRACKER_ID = /^[\w-]{1,64}$/;
+/** Percent per reputation tier id, -90 to 200, at most 20 tiers. */
+function cleanTierPcts(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw).slice(0, 20)) {
+    const n = int(v, -90, 200);
+    if (TRACKER_ID.test(k) && n !== null) out[k] = n;
+  }
+  return out;
 }
 
 /** The module's whole store (one world setting). */
@@ -87,13 +117,20 @@ export function shopsOf(market, actors, parentOf, isGM) {
 /* Money                                                              */
 /* ------------------------------------------------------------------ */
 
-/** Copper as coins for showing: "12 gp 5 sp", "3 cp", or `zero` ("free" for a price; "no money" for a purse).
- * Platinum is shown as gold, as PF2e's prices are. */
-export function formatCp(cp, zero = "free") {
+/** Copper as coins for showing: "12 gp 5 sp", "3 cp", or `zero` when there's none ("free" for a price, "no money"
+ * for a purse). Platinum is shown as gold, as PF2e's prices are. `units` are the coin names and `locale` the number
+ * format of the language shown. */
+export function formatCp(cp, zero = "free", { units = { gp: "gp", sp: "sp", cp: "cp" }, locale = "en" } = {}) {
   const n = Math.max(0, Math.round(Number(cp) || 0));
   if (!n) return zero;
   const gp = Math.floor(n / 100), sp = Math.floor((n % 100) / 10), c = n % 10;
-  return [gp && `${gp.toLocaleString("en-US")} gp`, sp && `${sp} sp`, c && `${c} cp`].filter(Boolean).join(" ");
+  let g;
+  try {
+    g = gp.toLocaleString(locale);
+  } catch {
+    g = String(gp);
+  }
+  return [gp && `${g} ${units.gp}`, sp && `${sp} ${units.sp}`, c && `${c} ${units.cp}`].filter(Boolean).join(" ");
 }
 
 /** The price of `qty` of an item sold in batches of `per` for `cp` copper, rounded up to the copper. */
@@ -103,22 +140,24 @@ export const priceFor = (cp, per, qty) => Math.ceil((Math.max(0, Number(cp) || 0
 /* Stock                                                              */
 /* ------------------------------------------------------------------ */
 
-/** Groups of stock in a shop, by PF2e item type, in the order they're shown. */
+/** Groups of stock in a shop, by PF2e item type, in the order they're shown (the window names them). Services
+ * (things a shop does rather than sells) come last. */
 export const CATEGORIES = [
-  ["weapons", "Weapons", ["weapon", "ammo"]],
-  ["armor", "Armor and shields", ["armor", "shield"]],
-  ["consumables", "Consumables", ["consumable"]],
-  ["runes", "Runes", []],
-  ["gear", "Gear", ["equipment", "backpack", "book"]],
-  ["treasure", "Treasure", ["treasure"]],
-  ["formulas", "Formulas", []],
+  ["weapons", ["weapon", "ammo"]],
+  ["armor", ["armor", "shield"]],
+  ["consumables", ["consumable"]],
+  ["runes", []],
+  ["gear", ["equipment", "backpack", "book"]],
+  ["treasure", ["treasure"]],
+  ["formulas", []],
+  ["services", []],
 ];
-const CATEGORY_OF = new Map(CATEGORIES.flatMap(([key, , types]) => types.map((t) => [t, key])));
+const CATEGORY_OF = new Map(CATEGORIES.flatMap(([key, types]) => types.map((t) => [t, key])));
 /**
- * A row's group: "formulas" for a formula, runes by usage (PF2e marks them "etched onto a weapon" or "armor"), else
- * by type ("gear" when unknown).
+ * A row's group: "services" for a service, "formulas" for a formula, runes by usage (PF2e marks them "etched onto a
+ * weapon" or "armor"), else by type ("gear" when unknown).
  */
-export const categoryOf = (row) => (row?.formula ? "formulas" : String(row?.usage ?? "").startsWith("etched-onto") ? "runes" : CATEGORY_OF.get(row?.type) ?? "gear");
+export const categoryOf = (row) => (row?.service ? "services" : row?.formula ? "formulas" : String(row?.usage ?? "").startsWith("etched-onto") ? "runes" : CATEGORY_OF.get(row?.type) ?? "gear");
 
 /** Does a stock row match a search? Every word must appear in its name, its traits or its type. */
 export function matchesQuery(row, query) {
@@ -128,13 +167,27 @@ export function matchesQuery(row, query) {
   return words.every((w) => hay.includes(w));
 }
 
-/** Stock rows grouped for showing: [key, label, rows] for each group with rows, each group by level then name. */
-export function groupStock(rows, query = "") {
+/** How the Buy list can be sorted: by level (then name), by name, or by price (each row's price for one batch). */
+export const STOCK_SORTS = ["level", "name", "price"];
+const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true });
+const SORTERS = {
+  level: (a, b) => (a.level - b.level) || byName(a, b),
+  name: byName,
+  price: (a, b) => ((a.shown ?? a.cp) - (b.shown ?? b.cp)) || byName(a, b),
+};
+
+/**
+ * Stock rows grouped for showing: [key, rows] for each group with rows. `sort` is one of STOCK_SORTS (rows may carry
+ * `shown`, the price for this buyer), `desc` turns it around; `filter(row)` keeps only the rows it passes (what the
+ * buyer can afford, up to their level).
+ */
+export function groupStock(rows, query = "", { sort = "level", desc = false, filter = null } = {}) {
+  const cmp = SORTERS[sort] ?? SORTERS.level;
   const out = [];
-  for (const [key, label] of CATEGORIES) {
-    const list = rows.filter((r) => categoryOf(r) === key && matchesQuery(r, query))
-      .sort((a, b) => (a.level - b.level) || a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
-    if (list.length) out.push([key, label, list]);
+  for (const [key] of CATEGORIES) {
+    const list = rows.filter((r) => categoryOf(r) === key && matchesQuery(r, query) && (!filter || filter(r))).sort(cmp);
+    if (desc) list.reverse();
+    if (list.length) out.push([key, list]);
   }
   return out;
 }
@@ -183,30 +236,34 @@ export function takeFromCart(lines, shop, item, qty) {
   return cleanLines(lines).map((l) => (l.shop === shop && l.item === item ? { ...l, qty: l.qty - Math.max(0, qty) } : l)).filter((l) => l.qty >= 1);
 }
 
-/** "Longsword, 10 Arrows and Chain Mail": a list of bought things for a notice. */
-export function listOf(names) {
+/** "Longsword, 10 Arrows, and Chain Mail": a list of things for a notice, in the language's own way (`locale`). */
+export function listOf(names, locale = "en") {
   if (names.length <= 1) return names.join("");
-  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+  try {
+    return new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(names);
+  } catch {
+    return names.join(", ");
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /* Shops: settings, purse, attitude prices, selling                   */
 /* ------------------------------------------------------------------ */
 
-/** A party's expected treasure over one level, in gp (GM Core's party treasure by level, total value), 1 to 20. */
-export const TREASURE_BY_LEVEL = [175, 300, 500, 850, 1350, 2000, 2900, 4000, 5700, 8000, 11500, 16500, 25000, 36500, 54500, 82500, 128000, 208000, 355000, 490000];
-
-/** A shop's full purse in copper: one level's party treasure for its level (100 gp below level 1), scaled by the
- * world's purse setting (a percentage). */
-export function purseFor(level, scalePct = 100) {
+/**
+ * A shop's full purse in copper: one level's party treasure for its level (100 gp below level 1), scaled by the
+ * world's purse setting (a percentage). `treasureGp(level)` gives the party treasure for a level 1 to 20 in gp, read
+ * from the PF2e system; null when it can't be read, and then so is the purse.
+ */
+export function purseFor(level, treasureGp, scalePct = 100) {
   const lvl = Math.round(Number(level) || 0);
-  const gp = lvl < 1 ? 100 : TREASURE_BY_LEVEL[Math.min(lvl, 20) - 1];
+  const gp = lvl < 1 ? 100 : treasureGp?.(Math.min(lvl, 20));
+  if (!Number.isFinite(gp)) return null;
   const scale = Math.max(0, Number(scalePct) || 0);
   return Math.round(gp * 100 * scale / 100);
 }
 
 export const ATTITUDES = ["hostile", "unfriendly", "indifferent", "friendly", "helpful"];
-export const ATTITUDE_LABEL = { hostile: "Hostile", unfriendly: "Unfriendly", indifferent: "Indifferent", friendly: "Friendly", helpful: "Helpful" };
 export const PRICE_DEFAULTS = { hostile: 50, unfriendly: 20, indifferent: 0, friendly: -10, helpful: -20 };
 
 /** A shop's settings (actor flag `shop`), every field checked. */
@@ -226,7 +283,106 @@ export function cleanShop(raw) {
     lines: cleanStockLines(r.lines),
     // How many restocks an item players sold stays for (1: gone at the next one).
     keepSold: Number.isFinite(Math.round(Number(r.keepSold))) && r.keepSold !== null && r.keepSold !== "" ? Math.max(1, Math.min(9, Math.round(Number(r.keepSold)))) : 2,
+    // Services: what the shop does rather than sells (a night's lodging, a crossing), each with a price in copper.
+    services: cleanServices(r.services),
   };
+}
+
+export const MAX_SERVICES = 30;
+/** A shop's services, checked: { id, name, cp, note }, each id once. */
+export function cleanServices(raw) {
+  const out = [];
+  const seen = new Set();
+  for (const s of Array.isArray(raw) ? raw : []) {
+    const id = String(s?.id ?? "");
+    const name = str(s?.name, 80);
+    if (!ID.test(id) || seen.has(id) || !name || out.length >= MAX_SERVICES) continue;
+    seen.add(id);
+    out.push({ id, name, cp: int(s.cp, 0, 100000000) ?? 0, note: str(s.note, 200) });
+  }
+  return out;
+}
+
+/** The settings one shop can copy from another: what it pays, its purse, its stock lines and services, how long it
+ * keeps what players sold. Never its shopkeeper or attitude, which belong to who runs it. */
+export function copyShopSettings(from, to) {
+  const f = cleanShop(from), t = cleanShop(to);
+  return cleanShop({ ...t, buys: f.buys, itemRate: f.itemRate, treasureRate: f.treasureRate, unlimited: f.unlimited, keepSold: f.keepSold, lines: f.lines, services: f.services });
+}
+
+/** Kinds of shop, each a ready set of rotating stock lines (the GM can change them after). */
+export const SHOP_KINDS = {
+  blacksmith: [{ filter: "weapons", amount: "many", rarity: "common" }, { filter: "armor", amount: "some", rarity: "common" }, { filter: "shields", amount: "few", rarity: "common" }, { filter: "ammo", amount: "some", rarity: "common" }],
+  alchemist: [{ filter: "bombs", amount: "some", rarity: "common" }, { filter: "elixirs", amount: "many", rarity: "common" }, { filter: "alchemy", amount: "some", rarity: "common" }, { filter: "formulas-alchemical", amount: "few", rarity: "common" }],
+  general: [{ filter: "gear", amount: "lots", rarity: "common" }, { filter: "ammo", amount: "few", rarity: "common" }, { filter: "potions", amount: "few", rarity: "common" }],
+  magic: [{ filter: "worn", amount: "some", rarity: "uncommon" }, { filter: "held", amount: "some", rarity: "uncommon" }, { filter: "wands", amount: "few", rarity: "common" }, { filter: "scrolls", amount: "some", rarity: "common" }, { filter: "weapon-runes", amount: "few", rarity: "common" }, { filter: "armor-runes", amount: "few", rarity: "common" }],
+  temple: [{ filter: "potions", amount: "some", rarity: "common" }, { filter: "scrolls", amount: "some", rarity: "common" }, { filter: "talismans", amount: "few", rarity: "common" }],
+  fence: [{ filter: "weapons", amount: "few", rarity: "uncommon" }, { filter: "worn", amount: "few", rarity: "uncommon" }, { filter: "alchemy", amount: "few", rarity: "uncommon" }, { filter: "treasure", amount: "some", rarity: "common" }],
+  jeweler: [{ filter: "treasure", amount: "many", rarity: "uncommon" }, { filter: "worn", amount: "few", rarity: "common" }],
+};
+
+/* ------------------------------------------------------------------ */
+/* Prices: market, reputation and haggling on top of attitude          */
+/* ------------------------------------------------------------------ */
+
+/** What each degree of a haggle does to prices, in percent (world settings): buying only. */
+export const HAGGLE_DEGREES = ["criticalSuccess", "success", "failure", "criticalFailure"];
+export const HAGGLE_DEFAULTS = { criticalSuccess: -20, success: -10, failure: 0, criticalFailure: 10 };
+
+/** A shop's haggles (actor flag `haggle`): { [character id]: { rot (the shop's rotation then), degree } }. */
+export function cleanHaggle(raw) {
+  const out = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw).slice(0, 200)) {
+    const rot = int(v?.rot, 0, 1000000);
+    // rerolled: the one reroll a haggle may have (a Hero Point) has been used.
+    if (ID.test(k) && rot !== null && HAGGLE_DEGREES.includes(v?.degree)) out[k] = v.rerolled ? { rot, degree: v.degree, rerolled: true } : { rot, degree: v.degree };
+  }
+  return out;
+}
+
+/**
+ * The degree of success a check's total gives against a DC, before anything adjusts it: 10 or more over is a
+ * critical success, at or over a success, more than 10 under a critical failure; a natural 20 is one step better and a
+ * natural 1 one step worse (`natural` is null for a roll with no d20, such as Assurance).
+ */
+export function checkDegree(total, dc, natural = null) {
+  const t = Number(total), d = Number(dc);
+  let i = t >= d + 10 ? 3 : t >= d ? 2 : t > d - 10 ? 1 : 0;
+  if (natural === 20) i++;
+  if (natural === 1) i--;
+  return ["criticalFailure", "failure", "success", "criticalSuccess"][Math.max(0, Math.min(3, i))];
+}
+
+/** A character's haggle at a shop now: their entry, only while the shop hasn't restocked since (`rotation`). */
+export const haggleNow = (haggle, actorId, rotation) => {
+  const h = cleanHaggle(haggle)[actorId];
+  return h && h.rot === (Number(rotation) || 0) ? h : null;
+};
+export const hagglePct = (h, pcts = HAGGLE_DEFAULTS) => (h ? Number(pcts?.[h.degree] ?? HAGGLE_DEFAULTS[h.degree]) || 0 : 0);
+
+/**
+ * A reputation tracker's tier now, the way PF2e Campaign Trackers works it out: tiers sorted by their least value; the
+ * last one the value reaches, else the first. null when there are no tiers.
+ */
+export function repTier(tracker) {
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const tiers = [...(Array.isArray(tracker?.tiers) ? tracker.tiers : [])].sort((a, b) => num(a.min) - num(b.min));
+  let tier = tiers[0] ?? null;
+  for (const t of tiers) if (num(tracker.value) >= num(t.min)) tier = t;
+  return tier;
+}
+
+/** A reputation tier's name as Campaign Trackers keeps it (`label`). */
+export const tierName = (tier) => String(tier?.label ?? tier?.name ?? tier?.id ?? "");
+
+/**
+ * The whole price change for a buyer, in percent: the shopkeeper's attitude (null when they won't trade), then the
+ * market's change, its reputation tier's and the buyer's haggle, added. Never below -90.
+ */
+export function totalPct({ attitude, market = 0, reputation = 0, haggle = 0 }) {
+  if (attitude === null || attitude === undefined) return null;
+  return Math.max(-90, Math.min(1000, (Number(attitude) || 0) + (Number(market) || 0) + (Number(reputation) || 0) + (Number(haggle) || 0)));
 }
 
 /* ------------------------------------------------------------------ */
@@ -377,11 +533,13 @@ export function planTrade(settled, shopInfo) {
 /* ------------------------------------------------------------------ */
 
 export const LOG_MAX = 300;
+export const LOG_KINDS = ["buy", "sell", "trade", "deposit", "withdraw"];
 
 /** A log entry as stored, checked. */
 export function cleanLogEntry(e) {
   if (!e || typeof e !== "object") return null;
-  const kind = ["buy", "sell", "trade"].includes(e.kind) ? e.kind : null;
+  // buy and sell: at a shop; trade: at the Trade Post; deposit and withdraw: a market vault.
+  const kind = LOG_KINDS.includes(e.kind) ? e.kind : null;
   if (!kind) return null;
   const list = (v) => (Array.isArray(v) ? v : []).slice(0, MAX_LINES).map((i) => ({ name: str(i?.name, 120), qty: Math.max(1, Math.floor(Number(i?.qty)) || 1) }));
   const items = list(e.items);
@@ -407,14 +565,11 @@ export function addLogEntry(log, entry) {
   return e ? [e, ...list].slice(0, LOG_MAX) : list.slice(0, LOG_MAX);
 }
 
-/**
- * "Dagger priced by hand at 500 gp (its compendium entry: 2 sp)", or "... has no compendium entry; priced at ..."
- * when `h.source` is missing: for the GM's notice and the log.
- */
-export function handPricedNote(name, h) {
-  const price = (cp, per) => `${formatCp(cp)}${per > 1 ? ` for ${per}` : ""}`;
-  return h.source ? `${name} priced by hand at ${price(h.cp, h.per)} (its compendium entry: ${price(h.source.cp, h.source.per)})`
-    : `${name} has no compendium entry; priced at ${price(h.cp, h.per)}`;
+/** The log's entries from `from` to `to` (Date.now milliseconds; either may be null), oldest first. */
+export function logBetween(log, from = null, to = null) {
+  const lo = Number.isFinite(Number(from)) && from !== null ? Number(from) : -Infinity;
+  const hi = Number.isFinite(Number(to)) && to !== null ? Number(to) : Infinity;
+  return (Array.isArray(log) ? log : []).map(cleanLogEntry).filter((e) => e && e.t >= lo && e.t <= hi).sort((a, b) => a.t - b.t);
 }
 
 /* ------------------------------------------------------------------ */
@@ -429,35 +584,33 @@ const magical = (e) => tr(e).some((t) => t === "magical" || t === "invested" || 
 /** The ready filters a shop's rotating stock is drawn with. `scrolls` and `wands` also make spell scrolls and magic
  * wands from the spell list (the caller does that part). */
 export const STOCK_FILTERS = [
-  { id: "weapons", label: "Weapons", test: (e) => e.type === "weapon" && e.system?.group !== "bomb" && !tr(e).includes("staff") },
-  { id: "armor", label: "Armor", test: (e) => e.type === "armor" },
-  { id: "shields", label: "Shields", test: (e) => e.type === "shield" },
-  { id: "ammo", label: "Ammunition", test: (e) => e.type === "ammo" },
-  { id: "bombs", label: "Bombs", test: (e) => e.type === "weapon" && e.system?.group === "bomb" },
-  { id: "elixirs", label: "Elixirs and mutagens", test: (e) => e.type === "consumable" && ["elixir", "mutagen"].includes(cat(e)) },
-  { id: "alchemy", label: "Poisons and alchemical tools", test: (e) => e.type === "consumable" && (cat(e) === "poison" || (tr(e).includes("alchemical") && !["elixir", "mutagen", "potion", "oil"].includes(cat(e)))) },
-  { id: "potions", label: "Potions and oils", test: (e) => e.type === "consumable" && ["potion", "oil"].includes(cat(e)) },
-  { id: "scrolls", label: "Scrolls", test: (e) => e.type === "consumable" && cat(e) === "scroll" },
-  { id: "wands", label: "Wands", test: (e) => e.type === "consumable" && cat(e) === "wand" },
-  { id: "staves", label: "Staves", test: (e) => e.type === "weapon" && tr(e).includes("staff") },
-  { id: "talismans", label: "Talismans", test: (e) => e.type === "consumable" && ["talisman", "fulu"].includes(cat(e)) },
-  { id: "weapon-runes", label: "Weapon runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-a-weapon") },
-  { id: "armor-runes", label: "Armor runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-armor") },
-  { id: "worn", label: "Worn items", test: (e) => e.type === "equipment" && usage(e).startsWith("worn") && magical(e) },
-  { id: "held", label: "Held and other magic items", test: (e) => e.type === "equipment" && magical(e) && !usage(e).startsWith("worn") && !usage(e).startsWith("etched") },
+  { id: "weapons", test: (e) => e.type === "weapon" && e.system?.group !== "bomb" && !tr(e).includes("staff") },
+  { id: "armor", test: (e) => e.type === "armor" },
+  { id: "shields", test: (e) => e.type === "shield" },
+  { id: "ammo", test: (e) => e.type === "ammo" },
+  { id: "bombs", test: (e) => e.type === "weapon" && e.system?.group === "bomb" },
+  { id: "elixirs", test: (e) => e.type === "consumable" && ["elixir", "mutagen"].includes(cat(e)) },
+  { id: "alchemy", test: (e) => e.type === "consumable" && (cat(e) === "poison" || (tr(e).includes("alchemical") && !["elixir", "mutagen", "potion", "oil"].includes(cat(e)))) },
+  { id: "potions", test: (e) => e.type === "consumable" && ["potion", "oil"].includes(cat(e)) },
+  { id: "scrolls", test: (e) => e.type === "consumable" && cat(e) === "scroll" },
+  { id: "wands", test: (e) => e.type === "consumable" && cat(e) === "wand" },
+  { id: "staves", test: (e) => e.type === "weapon" && tr(e).includes("staff") },
+  { id: "talismans", test: (e) => e.type === "consumable" && ["talisman", "fulu"].includes(cat(e)) },
+  { id: "weapon-runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-a-weapon") },
+  { id: "armor-runes", test: (e) => e.type === "equipment" && usage(e).startsWith("etched-onto-armor") },
+  { id: "worn", test: (e) => e.type === "equipment" && usage(e).startsWith("worn") && magical(e) },
+  { id: "held", test: (e) => e.type === "equipment" && magical(e) && !usage(e).startsWith("worn") && !usage(e).startsWith("etched") },
   // Kits are left out: the system unpacks a kit into its contents when it lands on an actor.
-  { id: "gear", label: "Adventuring gear", test: (e) => ["equipment", "backpack", "book"].includes(e.type) && !magical(e) && !usage(e).startsWith("etched") },
-  { id: "treasure", label: "Gems and art", test: (e) => e.type === "treasure" && ["gem", "art-object"].includes(cat(e)) },
+  { id: "gear", test: (e) => ["equipment", "backpack", "book"].includes(e.type) && !magical(e) && !usage(e).startsWith("etched") },
+  { id: "treasure", test: (e) => e.type === "treasure" && ["gem", "art-object"].includes(cat(e)) },
   // Formulas: the shop sells a copy of the formula, not the item.
-  { id: "formulas-alchemical", label: "Formulas: alchemical", formula: true, test: (e) => tr(e).includes("alchemical") && e.type !== "treasure" },
-  { id: "formulas", label: "Formulas: any", formula: true, test: (e) => ["weapon", "armor", "shield", "ammo", "consumable", "equipment", "backpack"].includes(e.type) },
+  { id: "formulas-alchemical", formula: true, test: (e) => tr(e).includes("alchemical") && e.type !== "treasure" },
+  { id: "formulas", formula: true, test: (e) => ["weapon", "armor", "shield", "ammo", "consumable", "equipment", "backpack"].includes(e.type) },
 ];
 const FILTER_IDS = new Set(STOCK_FILTERS.map((f) => f.id));
-export const filterLabel = (id) => STOCK_FILTERS.find((f) => f.id === id)?.label ?? id;
 
 /** How many a line draws: a size (its range is a world setting) or an exact number. */
 export const AMOUNTS = ["few", "some", "many", "lots"];
-export const AMOUNT_LABEL = { few: "Few", some: "Some", many: "Many", lots: "Lots" };
 export const AMOUNT_DEFAULTS = { few: "1-3", some: "3-6", many: "6-10", lots: "10-20" };
 /** Rarities a line can reach: common only, up to uncommon, or up to rare (unique items are never drawn). */
 export const LINE_RARITIES = ["common", "uncommon", "rare"];
@@ -742,15 +895,33 @@ export const offerNet = (offer) => coinsCp(offer?.want?.cp) - coinsCp(offer?.giv
 /* Formulas                                                           */
 /* ------------------------------------------------------------------ */
 
-/** A common formula's price in gold by item level, 0 to 20 (the rules' Formula Price table). */
-export const FORMULA_GP = [0.5, 1, 2, 3, 5, 8, 13, 18, 25, 35, 50, 70, 100, 150, 225, 325, 500, 750, 1200, 2000, 3500];
 /** What uncommon and rare formulas cost, as multiples of a common one (world settings; unique items have none). */
 export const FORMULA_MULT_DEFAULTS = { uncommon: 2, rare: 10 };
 
-/** A formula's price in copper: the table for its level (below 0 as 0, above 20 as 20) times its rarity's multiple. */
-export function formulaPrice(level, rarity = "common", mults = FORMULA_MULT_DEFAULTS) {
+/**
+ * A common formula's price in copper for an item level, worked out from the PF2e system's party treasure table:
+ * a tenth of the currency each additional character gets at that level, in whole gold (levels 1 to 20); half of
+ * level 1's at level 0. `perPCGp(level)` reads that column (in gp) and gives null when it can't, and then this is null.
+ */
+export function formulaBaseCp(level, perPCGp) {
   const lv = Math.max(0, Math.min(20, Math.floor(Number(level) || 0)));
+  const gpAt = (l) => {
+    const v = perPCGp?.(l);
+    return Number.isFinite(v) && v > 0 ? Math.round(v / 10) * 100 : null;
+  };
+  if (lv === 0) {
+    const one = gpAt(1);
+    return one === null ? null : Math.round(one / 2);
+  }
+  return gpAt(lv);
+}
+
+/** A formula's price in copper: the common price for its level (below 0 as 0, above 20 as 20) times its rarity's
+ * multiple; null when the system's table can't be read. */
+export function formulaPrice(level, rarity = "common", mults = FORMULA_MULT_DEFAULTS, perPCGp = null) {
+  const base = formulaBaseCp(level, perPCGp);
+  if (base === null) return null;
   const n = Number(mults?.[rarity] ?? FORMULA_MULT_DEFAULTS[rarity] ?? 1);
   const m = rarity === "common" || !Number.isFinite(n) || n <= 0 ? 1 : n;
-  return Math.round(FORMULA_GP[lv] * 100 * m);
+  return Math.round(base * m);
 }

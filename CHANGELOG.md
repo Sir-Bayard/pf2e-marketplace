@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.0.0
+
+Features, keyboard access, translations, and rules read from the system.
+
+- **Rules read from the PF2e system**: the party treasure by level (for shop purses) and the DCs by level (for haggling) come from the system's GM Screen journal each time the world loads; the module keeps no copy. Formula prices are worked out from the same treasure table (a tenth of the currency per additional character at that level, in whole gold; half of level 1 at level 0). If a system update moves them, the GM is told once and Fill purse, prices worked out for formulas and haggling switch off; drawn formula lines are skipped with a notice.
+- **Haggling**: once per shop until its next restock, a character rolls Diplomacy against the DC for the shop's level; the GM's client records the first such roll. A critical success takes 20% off what they pay there, a success 10%, a critical failure adds 10% (world settings; for buying, and as with attitude a shop never pays more for goods than it would charge).
+- **Market prices**: a price change for every shop in a market, with a line saying why.
+- **Reputation**: a market can follow a reputation tracker in PF2e Campaign Trackers, each tier moving prices there by a percent.
+- **Vaults**: each character's own storage at a market, reached only from that market while it's open, with an optional fee per deposit.
+- **Services**: things a shop does rather than sells (lodging, a crossing), bought with coins like goods.
+- **Kinds of shop** (blacksmith, alchemist, general store, magic shop, temple, fence, jeweler) fill in a new shop's rotating stock lines, and **Copy settings from** takes another shop's.
+- **Chat receipts** after each trade at a shop: whispered to the trader's owners and the GMs, public, or off.
+- **Sort and filter the Buy list**: by name, level or price; only what the character can afford, or up to their level. Prices they can't afford are dimmed.
+- **Open a shop from its token**: a player's double-click on a merchant's linked token, or its sheet, opens its shop (a world setting, on by default); a button on the token's HUD does the same for the GM.
+- **Journal links**: `@Shop[id]{name}` and `@Market[id]{name}` open a shop or market. Copy link on a shop's card, or drag the card into a journal.
+- **Keyboard**: every control is a button, with focus kept across redraws, and every drag has a button that does the same (Add item, Add a merchant, the shopkeeper in Settings, Copy link).
+- Visible controls for what right-click did: a sheet button beside each item, a minus beside each add button, a pencil on the GM's stock and formula marks. Right-click still works.
+- The Pathfinder sheet look's color is in the window's menu with the looks (no longer a module setting).
+- The status and price lines are shorter: "Open for trade" sits in the header, and what makes up a character's prices (attitude, market, reputation, haggle) sits beside Trading as.
+- The Trade Post's new-offer form says which items go as their whole stack; the Draw preview prices an entry with parts as its whole stack.
+- An API for the trade log by time: `api.trades({ from, to })`.
+- Every word the window shows can be translated (`lang/en.json`).
+- Under the hood: the code is split into files by job; the window opens once however fast it's asked; it remembers its place with each world and user; the GM's tabs agree on which one answers players; item changes redraw only windows that show that actor; each draw and request works out the shops once. A test runs the trade steps with a failure at each one. The README is shorter, with the whole of it in `docs/guide.md`.
+- Needs a server restart after updating (new files and the language file).
+
 ## 0.5.1
 
 Fixes.

@@ -2,27 +2,29 @@
 
 A marketplace window for Pathfinder 2e on Foundry VTT 14. The GM sets up markets (a town's market district, a bazaar, a trading post) with their shops, and players browse them, fill a cart, buy and sell, all without opening a merchant sheet. Shops are the system's own merchants (loot actors with their sheet set to Merchant), so every shop keeps working as a normal merchant sheet if the module is turned off. No other modules are needed.
 
+The full [guide](docs/guide.md) covers everything; this page is the short version.
+
 ## What it looks like
 
 ![A market](docs/images/market.png)
 
-**A market**, in the Pathfinder sheet look. Its picture and description, and its shops. Players see the markets the GM has made visible, and can trade where the GM has opened them.
+**A market**, in the Pathfinder sheet look: its picture, description and shops.
 
 ![A shop](docs/images/shop.png)
 
-**A shop.** The tally of the cart at the top, the purse in the header, stock by group with level, rarity, stock and price, and descriptions on a click. This shopkeeper is friendly toward Vance, so his prices are 10% off.
+**A shop.** The tally of the cart at the top, the purse in the header, and stock by group with level, rarity, stock and price. The line beside Trading as says what makes up this character's prices.
 
 ![The cart](docs/images/cart.png)
 
-**The cart**, in the Dark look. What the character buys and sells, by shop, and what they pay or get. The GM's client makes the trade.
+**The cart**, in the Dark look: what the character buys and sells, by shop, and what they pay or get.
 
 ![Selling](docs/images/sell.png)
 
-**Selling**, in the Dark and parchment look. What the character carries and the shop's offer for each. Offers go into the same cart as purchases.
+**Selling**, in the Dark and parchment look: what the character carries and the shop's offer for each.
 
 ![The GM's view of a shop](docs/images/gm-shop.png)
 
-**The GM's view of a shop.** Shown or Hidden, Open or Closed, Fill purse, Restock, Draw, the shop's settings, its shopkeeper, and each item's place in the stock (staple or rotating).
+**The GM's view of a shop**: Shown, Open, Fill purse, Restock, Draw, Add item, Settings, and each item's place in the stock.
 
 ## Install
 
@@ -34,118 +36,32 @@ https://github.com/Sir-Bayard/pf2e-marketplace/releases/latest/download/module.j
 
 Foundry's **Update** button then picks up each new release. You can also download `module.zip` from the [latest release](https://github.com/Sir-Bayard/pf2e-marketplace/releases/latest) and unzip it into `Data/modules/pf2e-marketplace`.
 
-Requires Foundry VTT 14 (verified on 14.370) and the Pathfinder Second Edition system. No other modules.
+Requires Foundry VTT 14 (verified on 14.370) and the Pathfinder Second Edition system (verified on 8.7.0). No other modules.
 
-## Opening it
+## In short
 
-Click **Marketplace** at the top of the Actors tab. There's also a hotkey with no key set (**Open the Marketplace** in **Configure Controls**). The window remembers its size and place in each browser.
+**Open it** with **Marketplace** at the top of the Actors tab, or a hotkey you set. Players can also double-click a merchant's linked token. The window's menu has three looks (Dark, Dark and parchment, Pathfinder sheet) and the sheet look's color. Everything works from the keyboard.
 
-The window's menu (⋮ in its title bar) has three looks, each user's own choice, remembered in their browser: **Dark**; **Dark and parchment**, with markets and shops on parchment; and **Pathfinder sheet**, drawn with the system's own character sheet art (its parchment, red sidebar and frames).
+**For the GM:**
 
-## For the GM
+- **Markets** hold shops: every merchant in the market's folder, plus any you add. Each market is **Visible** (players browse it) and **Open** (players trade there), and can change all its prices (a festival), follow a reputation in [PF2e Campaign Trackers](https://github.com/Sir-Bayard/pf2e-campaign-trackers), and keep a **vault** for each character.
+- **Shops** have a purse (the merchant's coins), a shopkeeper whose attitude sets prices (with [PF2e NPC Attitudes](https://github.com/Sir-Bayard/pf2e-npc-attitudes) if you use it), what they pay for goods, and **services** (lodging, a crossing). A kind of shop, or another shop's settings, starts one off.
+- **Stock** is staples that come back on every restock, rotating stock drawn from the system's compendium by lines you choose ("Some Weapons, up to uncommon"), and what players sold. Restocks run when you say, or every so many days of game time.
+- **Formulas** can be sold instead of items, priced by item level.
+- The **trade log** keeps every trade, and a **receipt** goes to chat.
+- Links like `@Shop[id]` in a journal open a shop.
 
-### Markets
+**For players:**
 
-**New market** asks for a name, a picture, a level, a merchant folder and a description. Every PF2e merchant in the market's folder, and in the folders inside it, is one of its shops; pick an existing Actor folder or let the module make one named after the market. To add a merchant from elsewhere, drag it from the Actors tab onto the market; the small x on its card takes it out again (the merchant itself stays). **Edit** changes all of this later, and **Delete** removes the market but leaves its merchants and folder alone.
+- Pick a market and a shop, choose who's trading, and add goods and services to one **cart**, sorted and filtered as you like. A shop's **Sell** tab puts what you sell into the same cart; at each shop only the difference changes hands, and one button makes the whole trade.
+- **Haggle** once per shop between restocks, with Diplomacy against the DC for the shop's level.
+- The **Trade Post** is for trading between characters: offers and requests that another player accepts.
 
-Two switches on each market decide what players get:
+A GM has to be logged in for any trade. Two numbers come from the PF2e system itself rather than the module (the party treasure by level, for purses and formula prices, and the DCs by level, for haggling); if a system update moves them, the GM is told and the features that need them switch off until the module catches up.
 
-- **Visible**: players see the market and can browse its shops, for planning.
-- **Open**: players can buy and sell there. Opening a market makes it visible; hiding it closes it.
+## Settings and API
 
-A market starts hidden and closed.
-
-### Shops
-
-**New shop** makes a PF2e merchant in the market's folder, at the market's level, with a full purse. Drag items onto the shop's page (from a compendium, the Items tab or a sheet) to stock it; one the shop already has as a staple adds to that stack and its number. Any merchant you already have works too: put it in the folder.
-
-On a shop's page:
-
-- **Shown / Hidden**: a hidden shop doesn't appear to players even in a visible market (a fence, a back room).
-- **Open / Closed**: players can browse a closed shop but not trade there, even in an open market (closed for the night, sold out until the caravan comes). The market's own switches come first: players can't trade anywhere in a closed market, so opening (or showing) a shop in a closed (or hidden) market offers to open (or show) the market too.
-- **The purse** is the merchant's own coins, the money buyers pay in and the money it pays for what players sell. **Fill purse** tops it up to one level's party treasure for the shop's level (GM Core's table; 100 gp below level 1). It only adds coins, never takes any away, and you can always change the coins on the sheet.
-- **Settings**: the shop's level (at 0 it takes its market's), whether it buys from players, what it pays (50% of an item's price and 100% of treasure's value by default), an unlimited purse for a shop that never runs out, how many restocks it keeps what players sold, its rotating stock lines (see Stock and restocks) and its attitude (see below).
-- **Merchant sheet** opens the PF2e sheet.
-
-Shops sell identified goods: an item put in a shop unidentified is identified there.
-
-### Stock and restocks
-
-Each item in a shop is one of three kinds, shown to you on its line (click the mark to swap staple and rotating):
-
-- **Staples** come back to their number on every restock (right-click the mark to set it; a quantity changed on the merchant's sheet doesn't change it, and the next restock sets it back). Anything you drag onto a shop is a staple, and a staple that sells out stays on the list as sold out.
-- **Rotating** stock is cleared on a restock and drawn again.
-- **Sold** items are what players sold the shop. They're for sale at full price and stay for two restocks by default (gone at the second; a shop setting), so selling the day before market day still leaves a chance to buy back.
-
-Merchants you stocked before installing the module become staples of what they have, the first time a GM loads the world.
-
-A shop's **Settings** take its rotating stock lines, such as "Some Weapons", "Few Scrolls" or "4 Potions and oils", from 20 ready filters, each common only, up to uncommon or up to rare. Few, Some, Many and Lots draw a number in a range (1-3, 3-6, 6-10, 10-20 by default; module settings). Items are drawn from the system's compendium up to the shop's level, most of them near that level; consumables (not wands), bombs and ammunition come in stacks of one to four (a setting); scrolls and some wands get a random spell of a rank that fits. Nothing the shop already stocks is drawn again (for scrolls and wands, the same spell); Draw adds to what's there, a restock replaces the rotating stock.
-
-- **Draw** shows a draw from the lines to look over, with Draw again, and adds it as rotating stock.
-- **Restock** puts staples back, clears and redraws rotating stock, counts sold items down and fills the purse; you can skip the draw or keep sold items that once. **Restock all** on a market does every shop.
-- A market can **restock every so many days** of game time (Edit): when that much time has passed on the world clock, every shop restocks once, however long it's been. Restock all starts the count again.
-
-While a shop is browse only, players see its staples, plus the rest of its stock if they saw it open since its last restock ("the stock has changed since your last visit" otherwise).
-
-### Formulas
-
-Click the scroll mark on an item's line to sell its formula instead of the item. It shows as "Formula: Alchemist's Fire" under Formulas, priced from the Formula Price table by item level (5 sp at level 0, 1 gp at level 1, up to 3,500 gp at 20), times 2 for uncommon and 10 for rare (settings). Right-click the mark to set your own price. An item needs a compendium or Items-tab entry for its formula to point to. The shop keeps it and sells a copy to each buyer: the formula goes into the character's Crafting tab, with a parchment of it that weighs nothing. A character who already knows it can't buy it, and the party stash can't. The stock lines **Formulas: alchemical** and **Formulas: any** draw formulas, one copy each. A basic crafter's book is an ordinary item.
-
-### Shopkeepers and prices
-
-Drag an NPC onto a shop to make them its shopkeeper; players see their token name and picture. The shopkeeper's attitude changes what players pay when they buy:
-
-| Attitude | Price change |
-|---|---|
-| Hostile | won't trade |
-| Unfriendly | 20% more |
-| Indifferent | normal |
-| Friendly | 10% off |
-| Helpful | 20% off |
-
-These are settings, as is whether hostile shopkeepers trade at all. Treasure (gems, art objects) is never discounted, since shops buy it back at its full value; a markup still applies. Attitude doesn't change what a shop pays, except that a shop never pays a character more for something than it would charge them for it (with a discount of over 50%, say, it pays less than half for goods). With [PF2e NPC Attitudes](https://github.com/Sir-Bayard/pf2e-npc-attitudes) installed, the shopkeeper's attitude there counts, toward each character where you've set one. If the party is shown a different attitude from the true one (a merchant posing as a friend, or Unknown), prices are normal, so a disguise isn't given away and a secretly hostile merchant still trades; your view of the shop says when that's happening. Without NPC Attitudes, or for a shopkeeper with no attitude there, the shop's own attitude setting counts.
-
-### The trade log
-
-**Trade log** (shown only to you) lists every purchase and sale, newest first: who made it, for which character, the shop, what changed hands and for how much. It keeps the last 300. A sale of an item whose price doesn't match its compendium entry (a price edited on the sheet), or that has none (homebrew), is marked there and in your notice, with both prices; runes and materials added to an item don't count, since the system adds them on top of the item's own price.
-
-## For players
-
-Open the **Marketplace**, pick a market and a shop. Click an item for its description; right-click it for its full sheet. **Trading as** chooses which of your characters is shopping (or the party stash, if you own the party); prices are for that character.
-
-**Buying.** Click the cart button on a line to add one, or one batch for things sold in batches (10 arrows), never more than the shop has; right-click it to take one (or one batch) off. A formula is one copy: buying it puts it in your character's Crafting tab, with a parchment of it. An item's price includes anything attached to it (spikes on a shield, loaded ammunition), as the character sheet counts its worth, when buying and selling; a stack of such items trades all at once.
-
-**Selling.** A shop's **Sell** tab lists what your character carries, with the shop's offer for each. Click the offer button on a line to offer one more (or one batch), right-click for one fewer, or type how many. Unidentified items have to be identified first, and containers emptied. Something worth nothing sells for nothing, a way to get rid of it.
-
-**The cart and checkout.** Purchases and sales go into one cart, from any open shop. The bar at the top of a shop page keeps a running tally (what you're buying, what you're selling, and what you pay or get) with a **Checkout** button that opens the cart. The cart lists everything by shop, with minus and plus buttons for each quantity, and one button makes the whole trade. Sales are settled with purchases: at each shop only the difference changes hands, so selling your old armor can pay for the new, and a shop with an empty purse can still take a trade-in against what you buy from it. The GM's client checks the stock, the prices, your goods and your money, moves the coins (making change from bigger coins as the system does) and the items; what you buy arrives identified and stacked with what you have. If anything changed since you looked, nothing happens and you're told why. If the cart changed after the total you saw (a quantity typed a moment before), the button asks you to look again first.
-
-### The Trade Post
-
-**Trade Post** at the foot of the market list is where characters trade with each other. **New offer** puts up what your character gives (items and coins) and what they want: coins from anyone, or, for an offer to one character, coins and items of theirs. Give nothing and it's a request (5 sp from anyone, say), which another character fills with **Give**. Other players see it under Open offers or For you, and **Accept** makes the swap at once: both sides' items and only the difference in coins change hands, and the item goes as it is (an unidentified item stays unidentified). Nothing is held while an offer is up, so it's checked again when someone accepts; an item used or changed since it went up (a charge spent, damage, an edit) holds the offer until it's posted again. An item with something attached is offered as its whole stack. Take it down any time. The party stash doesn't trade here, and a character can have up to 10 offers up. The GM sees every offer, can remove any, and finds each trade in the trade log.
-
-A GM has to be logged in for any trade: Foundry only lets a GM's client change the merchants. Browsing works without one.
-
-## Privacy
-
-As with everything in Foundry, every actor and every world setting reaches every player's browser. Players don't see hidden markets, hidden shops or GM notes in the window, but a player who opens the browser console can read the markets, every merchant's stock and the trade log. Don't keep real secrets there.
-
-## Settings
-
-- **Pathfinder sheet look: color** (each user, Red): the color of the Pathfinder sheet look: Red, Green, Blue, Purple, Brown or Black.
-- **Stock line size: Few, Some, Many, Lots** (world, 1-3, 3-6, 6-10, 10-20): how many a rotating stock line of that size draws.
-- **Drawn consumables per stack** (world, 1-4): how many of each consumable, bomb or ammunition a draw gives, in batches.
-- **Formula price: uncommon, rare** (world, ×2, ×10): what an uncommon or rare formula costs, as a multiple of a common one.
-- **Shop purse size (%)** (world, 100): how full Fill purse and new shops make a purse. Lower it for a poor region, raise it for a rich one.
-- **Hostile shopkeepers won't trade** (world, on): off lets them trade at the Hostile price change.
-- **Price change** for each attitude (world): in percent, positive costs more, negative is a discount. Buying only; treasure is never discounted.
-- **Open the Marketplace** in **Configure Controls**: the hotkey, unset.
-
-## Macros
-
-`game.modules.get("pf2e-marketplace").api`:
-
-- `open(marketId, shopId)`: opens the window, on a market and shop if given.
-- `markets()`: the markets as stored.
+The settings (stock line sizes, purse size, formula multiples, attitude price changes, haggling, receipts, opening shops from tokens) and the API (`open`, `markets`, `trades`) are in the [guide](docs/guide.md#settings).
 
 ## Changes
 

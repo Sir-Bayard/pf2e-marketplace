@@ -4,6 +4,7 @@
  */
 
 import { formulaKey, fingerprint } from "./helpers.mjs";
+import { L } from "./constants.mjs";
 
 /** A PF2e merchant: a loot actor whose sheet type is "Merchant" (`system.lootSheetType`). */
 export const isMerchant = (actor) => actor?.type === "loot" && actor.system?.lootSheetType === "Merchant";
@@ -273,12 +274,12 @@ export function sellRows(actor) {
     if (!isPhysical(item) || isCoins(item)) continue;
     const { cp, per } = priceOf(item);
     let why = null;
-    if (item.isIdentified === false) why = "Identify it first.";
-    else if (granted(item)) why = "Not yours to sell (temporary, or granted by a feature).";
-    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
-    else if (isParchment(item)) why = "A formula's copy; shops don't buy it.";
+    if (item.isIdentified === false) why = L("WhyIdentify");
+    else if (granted(item)) why = L("WhyGrantedSell");
+    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = L("WhyEmpty");
+    else if (isParchment(item)) why = L("WhyParchment");
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
-    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), parts: hasParts(item), why });
+    out.push({ id: item.id, name: unid ? unid.name || L("UnidentifiedItem") : item.name, img: unid?.img || item.img, type: item.type, qty: quantityOf(item), cp, per, treasure: isTreasure(item), parts: hasParts(item), why });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
@@ -290,10 +291,10 @@ export function tradeRows(actor) {
   for (const item of actor?.items ?? []) {
     if (!isPhysical(item) || isCoins(item)) continue;
     let why = null;
-    if (granted(item)) why = "Not yours to trade (temporary, or granted by a feature).";
-    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = "Empty it first.";
+    if (granted(item)) why = L("WhyGrantedTrade");
+    else if (item.type === "backpack" && (item.contents?.size ?? 0) > 0) why = L("WhyEmpty");
     const unid = item.isIdentified === false ? item.system?.identification?.unidentified ?? {} : null;
-    out.push({ id: item.id, name: unid ? unid.name || "Unidentified item" : item.name, img: unid?.img || item.img, qty: quantityOf(item), parts: hasParts(item), why });
+    out.push({ id: item.id, name: unid ? unid.name || L("UnidentifiedItem") : item.name, img: unid?.img || item.img, qty: quantityOf(item), parts: hasParts(item), why });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 }
@@ -492,14 +493,14 @@ export function parchmentData(name, uuid) {
   // The label goes inside @UUID[...]{...} and HTML: no braces, brackets or markup.
   const label = String(name).replace(/[{}[\]<>&"]/g, "");
   return {
-    name: `Formula: ${name}`,
+    name: L("FormulaOf", { name }),
     type: "equipment",
     img: "icons/sundries/scrolls/scroll-rolled-white.webp",
     system: {
       quantity: 1,
       bulk: { value: 0 },
       price: { value: { gp: 0 } },
-      description: { value: `<p>A formula for @UUID[${uuid}]{${label}}, also in the Crafting tab.</p>` },
+      description: { value: `<p>${L("ParchmentText", { link: `@UUID[${uuid}]{${label}}` })}</p>` },
       equipped: { carryType: "worn" },
     },
     // Marked so it's never sold to a shop as if it were the formula.
